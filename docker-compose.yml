@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  codex-register:
+  codex-manager:
     build: .
-    container_name: codex-register
+    container_name: codex-manager
     ports:
       - "${APP_PORT:-8000}:8000"
     volumes:

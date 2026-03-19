@@ -158,7 +158,7 @@ bash build.sh
 ## 项目结构
 
 ```
-codex-register-v2/
+codex-manager/
 ├── webui.py            # Web UI 入口
 ├── build.bat           # Windows 打包脚本
 ├── build.sh            # Linux/macOS 打包脚本
@@ -289,8 +289,8 @@ codex-register-v2/
 
 ```bash
 # 克隆项目
-git clone https://github.com/cnlimiter/codex-register.git
-cd codex-register
+git clone https://github.com/moeacgx/codex-manager.git
+cd codex-manager
 
 # 启动服务
 docker-compose up -d
