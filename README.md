@@ -326,9 +326,14 @@ docker-compose logs -f
 # 停止服务
 docker-compose down
 
-# 重新构建
-docker-compose build --no-cache
+# 更新代码并重建容器
+git pull
+docker-compose up -d --build --force-recreate
 ```
+
+> 说明：仅执行 `docker-compose build --no-cache` 只会重建镜像，
+> **不会自动替换正在运行的旧容器**。更新后请使用
+> `docker-compose up -d --build --force-recreate` 让新代码生效。
 
 ## 注意事项
 
