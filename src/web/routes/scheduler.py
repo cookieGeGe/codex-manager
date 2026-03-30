@@ -11,6 +11,7 @@ router = APIRouter()
 
 class CPASchedulerConfig(BaseModel):
     check_enabled: bool
+    check_mode: str = "probe"
     check_remove_401: bool = False
     check_remove_401_interval: int = 3
     check_interval: int
@@ -29,6 +30,7 @@ async def get_cpa_scheduler_config():
     settings = get_settings()
     return {
         "check_enabled": settings.cpa_auto_check_enabled,
+        "check_mode": settings.cpa_auto_check_mode,
         "check_remove_401": settings.cpa_auto_check_remove_401,
         "check_remove_401_interval": settings.cpa_auto_check_remove_401_interval,
         "check_interval": settings.cpa_auto_check_interval,
@@ -59,8 +61,11 @@ async def get_system_logs(since_id: int = 0):
 @router.post("/config")
 async def update_cpa_scheduler_config(request: CPASchedulerConfig, background_tasks: BackgroundTasks):
     """保存CPA自动化配置"""
+    if request.check_mode not in ("probe", "panel"):
+        raise HTTPException(status_code=400, detail="检测方式必须为 probe 或 panel")
     update_settings(
         cpa_auto_check_enabled=request.check_enabled,
+        cpa_auto_check_mode=request.check_mode,
         cpa_auto_check_remove_401=request.check_remove_401,
         cpa_auto_check_remove_401_interval=request.check_remove_401_interval,
         cpa_auto_check_interval=request.check_interval,

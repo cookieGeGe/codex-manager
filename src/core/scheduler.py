@@ -885,76 +885,130 @@ def check_cpa_services_job(
                                     except Exception as e:
                                         _log(f"调度早间补偿任务失败: {e}", 'error')
                         
-                        if not files:
-                            if removed_401 > 0:
-                                _log(f"CPA 服务 {svc.name} 401/403 快速剔除后无剩余凭证待测", 'warning')
-                            else:
-                                _log(f"CPA 服务 {svc.name} 暂无可测凭证", 'warning')
-                        else:
-                            _log(f"开始并发穿透测试这 {len(files)} 个凭证的健康状态，最大并发数: {settings.global_concurrency}，请耐心等待...")
-                        invalid_count = removed_401
-                        valid_count_lock = threading.Lock()
-                        invalid_count_lock = threading.Lock()
-                        total_files = len(files)
-                        
-                        def _test_item(item, index, total):
-                            if _should_abort_check():
-                                return True, None
-                            name = str(item.get("name", "")).strip()
-                            if not name:
-                                return False, None
-                            
-                            if settings.cpa_auto_check_sleep_seconds > 0:
-                                import time
-                                time.sleep(settings.cpa_auto_check_sleep_seconds)
-                            
-                            try:
-                                is_valid, msg = test_cliproxy_auth_file(item, svc.api_url, svc.api_token)
-                                if is_valid:
-                                    _log(f"测活进度 [{index}/{total}]: 凭证 {name} 状态正常")
-                                    return True, name
-                                else:
-                                    failure_desc = _describe_cliproxy_failure(msg)
-                                    _log(
-                                        f"测活进度 [{index}/{total}]: 凭证 {name} {failure_desc} ({msg})，正在剔除...",
-                                        'warning',
-                                    )
-                                    if not _is_cpa_codex_auth_file(item):
-                                        _log(f"检测到非 Codex 凭证 {name}，按策略仅跳过不清理", 'warning')
-                                        return False, None
-                                    delete_cliproxy_auth_file(name, svc.api_url, svc.api_token)
-                                    _log(f"已剔除失效凭证: {name}")
-                                    return False, name
-                            except Exception as e:
-                                _log(f"测活进度 [{index}/{total}]: 测试凭证 {name} 报错 ({e})", 'error')
-                                return True, None
+                        check_mode = (getattr(settings, "cpa_auto_check_mode", "probe") or "probe").lower()
+                        if check_mode not in ("probe", "panel"):
+                            check_mode = "probe"
 
-                        if files:
-                            with ThreadPoolExecutor(max_workers=settings.global_concurrency) as executor:
-                                futures = []
-                                for i, item in enumerate(files, 1):
-                                    if not get_settings().cpa_auto_check_enabled and manual_logs is None:
-                                        _log("任务参数已被手动修改为停止，中止并退出当前检查...", 'warning')
-                                        # Cancel pending futures
-                                        for f in futures: f.cancel()
-                                        return
-                                    if _should_abort_check():
-                                        _consume_abort_check()
-                                        _log("检测任务收到中止请求，终止后续测活并准备重启。", "warning")
-                                        for f in futures: f.cancel()
-                                        aborted = True
-                                        break
-                                    futures.append(executor.submit(_test_item, item, i, total_files))
+                        if check_mode == "panel":
+                            if not files:
+                                if removed_401 > 0:
+                                    _log(f"CPA 服务 {svc.name} 401/403 快速剔除后无剩余凭证待测", 'warning')
+                                else:
+                                    _log(f"CPA 服务 {svc.name} 暂无可测凭证", 'warning')
+                            else:
+                                _log(f"启用面板报错剔除模式，不进行穿透测活，待处理 {len(files)} 个凭证")
+                            invalid_count = removed_401
+                            remaining_count = 0
+                            min_remaining_weekly_percent = int(
+                                getattr(settings, "cpa_auto_check_min_remaining_weekly_percent", 0) or 0
+                            )
+                            min_remaining_weekly_percent = max(0, min(100, min_remaining_weekly_percent))
+                            for item in files:
+                                if _should_abort_check():
+                                    _consume_abort_check()
+                                    _log("检测任务收到中止请求，终止面板报错剔除并准备重启。", "warning")
+                                    aborted = True
+                                    break
+                                name = str(item.get("name", "")).strip()
+                                if not name:
+                                    continue
+                                status_code = _extract_cliproxy_status_code(item)
+                                reason = _extract_cliproxy_item_failure_reason(
+                                    item,
+                                    min_remaining_weekly_percent,
+                                )
+                                should_remove = False
+                                if status_code is not None and status_code >= 400:
+                                    should_remove = True
+                                if reason:
+                                    should_remove = True
+
+                                if should_remove:
+                                    try:
+                                        delete_cliproxy_auth_file(name, svc.api_url, svc.api_token)
+                                        invalid_count += 1
+                                        suffix = f" ({reason})" if reason else ""
+                                        code_text = f"status_code={status_code}" if status_code is not None else "status_code=unknown"
+                                        _log(f"面板报错剔除: {name} ({code_text}){suffix}", 'warning')
+                                    except Exception as e:
+                                        _log(f"面板报错剔除 {name} 失败: {e}", 'error')
+                                else:
+                                    remaining_count += 1
+
+                            valid_count = remaining_count
+                            if not aborted:
+                                _log(f"CPA 服务 {svc.name} 面板报错剔除完成，有效: {valid_count}，剔除: {invalid_count}")
+                        else:
+                            if not files:
+                                if removed_401 > 0:
+                                    _log(f"CPA 服务 {svc.name} 401/403 快速剔除后无剩余凭证待测", 'warning')
+                                else:
+                                    _log(f"CPA 服务 {svc.name} 暂无可测凭证", 'warning')
+                            else:
+                                _log(f"开始并发穿透测试这 {len(files)} 个凭证的健康状态，最大并发数: {settings.global_concurrency}，请耐心等待...")
+                            invalid_count = removed_401
+                            valid_count_lock = threading.Lock()
+                            invalid_count_lock = threading.Lock()
+                            total_files = len(files)
+                            
+                            def _test_item(item, index, total):
+                                if _should_abort_check():
+                                    return True, None
+                                name = str(item.get("name", "")).strip()
+                                if not name:
+                                    return False, None
                                 
-                                for future in as_completed(futures):
-                                    is_valid, deleted_name = future.result()
+                                if settings.cpa_auto_check_sleep_seconds > 0:
+                                    import time
+                                    time.sleep(settings.cpa_auto_check_sleep_seconds)
+                                
+                                try:
+                                    is_valid, msg = test_cliproxy_auth_file(item, svc.api_url, svc.api_token)
                                     if is_valid:
-                                        with valid_count_lock: valid_count += 1
-                                    elif deleted_name:
-                                        with invalid_count_lock: invalid_count += 1
-                                        
-                        if not aborted:
-                            _log(f"CPA 服务 {svc.name} 检查完成，有效: {valid_count}，剔除: {invalid_count}")
+                                        _log(f"测活进度 [{index}/{total}]: 凭证 {name} 状态正常")
+                                        return True, name
+                                    else:
+                                        failure_desc = _describe_cliproxy_failure(msg)
+                                        _log(
+                                            f"测活进度 [{index}/{total}]: 凭证 {name} {failure_desc} ({msg})，正在剔除...",
+                                            'warning',
+                                        )
+                                        if not _is_cpa_codex_auth_file(item):
+                                            _log(f"检测到非 Codex 凭证 {name}，按策略仅跳过不清理", 'warning')
+                                            return False, None
+                                        delete_cliproxy_auth_file(name, svc.api_url, svc.api_token)
+                                        _log(f"已剔除失效凭证: {name}")
+                                        return False, name
+                                except Exception as e:
+                                    _log(f"测活进度 [{index}/{total}]: 测试凭证 {name} 报错 ({e})", 'error')
+                                    return True, None
+
+                            if files:
+                                with ThreadPoolExecutor(max_workers=settings.global_concurrency) as executor:
+                                    futures = []
+                                    for i, item in enumerate(files, 1):
+                                        if not get_settings().cpa_auto_check_enabled and manual_logs is None:
+                                            _log("任务参数已被手动修改为停止，中止并退出当前检查...", 'warning')
+                                            # Cancel pending futures
+                                            for f in futures: f.cancel()
+                                            return
+                                        if _should_abort_check():
+                                            _consume_abort_check()
+                                            _log("检测任务收到中止请求，终止后续测活并准备重启。", "warning")
+                                            for f in futures: f.cancel()
+                                            aborted = True
+                                            break
+                                        futures.append(executor.submit(_test_item, item, i, total_files))
+                                    
+                                    for future in as_completed(futures):
+                                        is_valid, deleted_name = future.result()
+                                        if is_valid:
+                                            with valid_count_lock: valid_count += 1
+                                        elif deleted_name:
+                                            with invalid_count_lock: invalid_count += 1
+                                            
+                            if not aborted:
+                                _log(f"CPA 服务 {svc.name} 检查完成，有效: {valid_count}，剔除: {invalid_count}")
                     
                 except Exception as e:
                     _log(f"检查 CPA 服务 {svc.id} ({svc.name}) 异常/鉴权失败: {e}", 'error')

@@ -95,6 +95,7 @@ const elements = {
     tmServiceSelect: document.getElementById('tm-service-select'),
     // 定时 CPA
     cpaAutoCheckEnabled: document.getElementById('cpa-auto-check-enabled'),
+    cpaCheckMode: document.getElementById('cpa-check-mode'),
     cpaAutoRemove401: document.getElementById('cpa-auto-remove-401'),
     cpaCheck401Interval: document.getElementById('cpa-check-401-interval'),
     cpaTestUrl: document.getElementById('cpa-test-url'),
@@ -127,6 +128,7 @@ async function loadSchedulerConfig() {
     try {
         const config = await api.get('/scheduler/config');
         if (elements.cpaAutoCheckEnabled) elements.cpaAutoCheckEnabled.checked = config.check_enabled;
+        if (elements.cpaCheckMode) elements.cpaCheckMode.value = config.check_mode || 'probe';
         if (elements.cpaAutoRemove401) elements.cpaAutoRemove401.checked = !!config.check_remove_401;
         if (elements.cpaCheck401Interval) elements.cpaCheck401Interval.value = config.check_remove_401_interval ?? 3;
         if (elements.cpaTestUrl) elements.cpaTestUrl.value = config.test_url || '';
@@ -283,6 +285,7 @@ async function handleSaveSchedulerConfig() {
         const emailServicePool = getSelectedEmailServiceValues().filter(v => v !== 'outlook_batch:all');
         await api.post('/scheduler/config', {
             check_enabled: elements.cpaAutoCheckEnabled.checked,
+            check_mode: elements.cpaCheckMode ? elements.cpaCheckMode.value : 'probe',
             check_remove_401: elements.cpaAutoRemove401 ? elements.cpaAutoRemove401.checked : false,
             check_remove_401_interval: elements.cpaCheck401Interval ? (parseInt(elements.cpaCheck401Interval.value) || 3) : 3,
             check_interval: parseInt(elements.cpaCheckInterval.value) || 60,
@@ -314,6 +317,7 @@ async function handleStopSchedulerTask() {
         const emailServicePool = getSelectedEmailServiceValues().filter(v => v !== 'outlook_batch:all');
         await api.post('/scheduler/config', {
             check_enabled: false,
+            check_mode: elements.cpaCheckMode ? elements.cpaCheckMode.value : 'probe',
             check_remove_401: elements.cpaAutoRemove401 ? elements.cpaAutoRemove401.checked : false,
             check_remove_401_interval: elements.cpaCheck401Interval ? (parseInt(elements.cpaCheck401Interval.value) || 3) : 3,
             check_interval: parseInt(elements.cpaCheckInterval.value) || 60,
