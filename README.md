@@ -117,6 +117,7 @@ cp .env.example .env
 | `APP_PORT` | 监听端口 | `8000` |
 | `APP_ACCESS_PASSWORD` | Web UI 访问密钥 | `admin123` |
 | `APP_DATABASE_URL` | 数据库连接字符串 | `data/database.db` |
+| `APP_UPDATE_REPOSITORY` | 更新检查仓库 | `moeacgx/codex-manager` |
 
 > 优先级：命令行参数 > 环境变量（`.env`）> 数据库设置 > 默认值
 

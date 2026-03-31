@@ -753,6 +753,9 @@ def _load_settings_from_db() -> Dict[str, Any]:
             env_password = os.environ.get("APP_ACCESS_PASSWORD")
             if env_password:
                 settings_dict["webui_access_password"] = env_password
+            env_update_repo = os.environ.get("APP_UPDATE_REPOSITORY")
+            if env_update_repo:
+                settings_dict["update_repository"] = env_update_repo
         return settings_dict
     except Exception as e:
         if "未初始化" not in str(e):
