@@ -114,9 +114,201 @@ const elements = {
     cpaForceCheckBtn: document.getElementById('cpa-force-check-btn'),
 };
 
+// 注册设置持久化（本地存储）
+const REG_FORM_STATE_KEY = 'registration_form_state_v1';
+let registrationFormState = null;
+let suppressFormStateSave = false;
+
+function loadRegistrationFormState() {
+    try {
+        const raw = localStorage.getItem(REG_FORM_STATE_KEY);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (data && typeof data === 'object') {
+            registrationFormState = data;
+            return data;
+        }
+    } catch (e) {
+        console.warn('注册设置读取失败', e);
+    }
+    return null;
+}
+
+function buildRegistrationFormState() {
+    return {
+        email_service_values: getSelectedEmailServiceValues(),
+        reg_mode: elements.regMode ? elements.regMode.value : 'single',
+        token_mode: elements.tokenMode ? elements.tokenMode.value : 'auto',
+        batch_count: elements.batchCount ? elements.batchCount.value : '',
+        concurrency_mode: elements.concurrencyMode ? elements.concurrencyMode.value : 'pipeline',
+        concurrency_count: elements.concurrencyCount ? elements.concurrencyCount.value : '',
+        interval_min: elements.intervalMin ? elements.intervalMin.value : '',
+        interval_max: elements.intervalMax ? elements.intervalMax.value : '',
+        auto_upload: {
+            cpa: !!(elements.autoUploadCpa && elements.autoUploadCpa.checked),
+            sub2api: !!(elements.autoUploadSub2api && elements.autoUploadSub2api.checked),
+            tm: !!(elements.autoUploadTm && elements.autoUploadTm.checked),
+        },
+        auto_upload_service_ids: {
+            cpa: getSelectedServiceIds(elements.cpaServiceSelect),
+            sub2api: getSelectedServiceIds(elements.sub2apiServiceSelect),
+            tm: getSelectedServiceIds(elements.tmServiceSelect),
+        },
+        outlook: {
+            skip_registered: !!(elements.outlookSkipRegistered && elements.outlookSkipRegistered.checked),
+            concurrency_mode: elements.outlookConcurrencyMode ? elements.outlookConcurrencyMode.value : 'pipeline',
+            concurrency_count: elements.outlookConcurrencyCount ? elements.outlookConcurrencyCount.value : '',
+            interval_min: elements.outlookIntervalMin ? elements.outlookIntervalMin.value : '',
+            interval_max: elements.outlookIntervalMax ? elements.outlookIntervalMax.value : '',
+            selected_ids: getSelectedOutlookAccountIds(),
+        }
+    };
+}
+
+function saveRegistrationFormState() {
+    if (suppressFormStateSave) return;
+    try {
+        const state = buildRegistrationFormState();
+        localStorage.setItem(REG_FORM_STATE_KEY, JSON.stringify(state));
+    } catch (e) {
+        console.warn('注册设置保存失败', e);
+    }
+}
+
+function applyRegistrationFormStateBase() {
+    if (!registrationFormState) return;
+    suppressFormStateSave = true;
+    try {
+        if (elements.regMode && registrationFormState.reg_mode) {
+            elements.regMode.value = registrationFormState.reg_mode;
+            handleModeChange({ target: elements.regMode });
+        }
+        if (elements.tokenMode && registrationFormState.token_mode) {
+            elements.tokenMode.value = registrationFormState.token_mode;
+        }
+        if (elements.batchCount && registrationFormState.batch_count !== undefined) {
+            elements.batchCount.value = registrationFormState.batch_count;
+        }
+        if (elements.concurrencyMode && registrationFormState.concurrency_mode) {
+            elements.concurrencyMode.value = registrationFormState.concurrency_mode;
+            handleConcurrencyModeChange(elements.concurrencyMode, elements.concurrencyHint, elements.intervalGroup);
+        }
+        if (elements.concurrencyCount && registrationFormState.concurrency_count !== undefined) {
+            elements.concurrencyCount.value = registrationFormState.concurrency_count;
+        }
+        if (elements.intervalMin && registrationFormState.interval_min !== undefined) {
+            elements.intervalMin.value = registrationFormState.interval_min;
+        }
+        if (elements.intervalMax && registrationFormState.interval_max !== undefined) {
+            elements.intervalMax.value = registrationFormState.interval_max;
+        }
+
+        if (elements.autoUploadCpa && registrationFormState.auto_upload) {
+            elements.autoUploadCpa.checked = !!registrationFormState.auto_upload.cpa;
+            if (elements.cpaServiceSelectGroup) {
+                elements.cpaServiceSelectGroup.style.display = elements.autoUploadCpa.checked ? 'block' : 'none';
+            }
+        }
+        if (elements.autoUploadSub2api && registrationFormState.auto_upload) {
+            elements.autoUploadSub2api.checked = !!registrationFormState.auto_upload.sub2api;
+            if (elements.sub2apiServiceSelectGroup) {
+                elements.sub2apiServiceSelectGroup.style.display = elements.autoUploadSub2api.checked ? 'block' : 'none';
+            }
+        }
+        if (elements.autoUploadTm && registrationFormState.auto_upload) {
+            elements.autoUploadTm.checked = !!registrationFormState.auto_upload.tm;
+            if (elements.tmServiceSelectGroup) {
+                elements.tmServiceSelectGroup.style.display = elements.autoUploadTm.checked ? 'block' : 'none';
+            }
+        }
+
+        if (elements.outlookSkipRegistered && registrationFormState.outlook) {
+            elements.outlookSkipRegistered.checked = !!registrationFormState.outlook.skip_registered;
+        }
+        if (elements.outlookConcurrencyMode && registrationFormState.outlook?.concurrency_mode) {
+            elements.outlookConcurrencyMode.value = registrationFormState.outlook.concurrency_mode;
+            handleConcurrencyModeChange(elements.outlookConcurrencyMode, elements.outlookConcurrencyHint, elements.outlookIntervalGroup);
+        }
+        if (elements.outlookConcurrencyCount && registrationFormState.outlook?.concurrency_count !== undefined) {
+            elements.outlookConcurrencyCount.value = registrationFormState.outlook.concurrency_count;
+        }
+        if (elements.outlookIntervalMin && registrationFormState.outlook?.interval_min !== undefined) {
+            elements.outlookIntervalMin.value = registrationFormState.outlook.interval_min;
+        }
+        if (elements.outlookIntervalMax && registrationFormState.outlook?.interval_max !== undefined) {
+            elements.outlookIntervalMax.value = registrationFormState.outlook.interval_max;
+        }
+    } finally {
+        suppressFormStateSave = false;
+    }
+}
+
+function applyEmailServiceSelectionFromState(container) {
+    const saved = registrationFormState?.email_service_values;
+    if (!Array.isArray(saved) || saved.length === 0 || !container) return false;
+    const checkboxes = container.querySelectorAll('.msd-item input[type=checkbox]');
+    if (!checkboxes || checkboxes.length === 0) return false;
+
+    let matched = 0;
+    checkboxes.forEach(cb => {
+        const shouldCheck = saved.includes(cb.value);
+        cb.checked = shouldCheck;
+        if (shouldCheck) matched += 1;
+    });
+    if (saved.includes('outlook_batch:all')) {
+        checkboxes.forEach(cb => {
+            if (cb.value !== 'outlook_batch:all') cb.checked = false;
+        });
+        const batchCb = container.querySelector('input[value="outlook_batch:all"]');
+        if (batchCb) batchCb.checked = true;
+    } else {
+        const batchCb = container.querySelector('input[value="outlook_batch:all"]');
+        if (batchCb) batchCb.checked = false;
+    }
+    if (saved.includes('outlook_batch:all')) {
+        const batchCb = container.querySelector('input[value="outlook_batch:all"]');
+        matched = batchCb && batchCb.checked ? 1 : 0;
+    }
+    return matched > 0;
+}
+
+function applyMultiSelectIdsFromState(container, savedIds) {
+    if (!container || !Array.isArray(savedIds) || savedIds.length === 0) return;
+    const checkboxes = container.querySelectorAll('.msd-item input[type=checkbox]');
+    if (!checkboxes || checkboxes.length === 0) return;
+    const savedSet = new Set(savedIds.map(v => parseInt(v)));
+    checkboxes.forEach(cb => {
+        cb.checked = savedSet.has(parseInt(cb.value));
+    });
+    updateMsdLabel(container.id + '-dd');
+}
+
+function getSelectedOutlookAccountIds() {
+    const checkboxes = document.querySelectorAll('.outlook-account-checkbox');
+    if (!checkboxes || checkboxes.length === 0) {
+        const saved = registrationFormState?.outlook?.selected_ids;
+        return Array.isArray(saved) ? saved : [];
+    }
+    return Array.from(checkboxes)
+        .filter(cb => cb.checked)
+        .map(cb => parseInt(cb.value))
+        .filter(v => !Number.isNaN(v));
+}
+
+function applyOutlookAccountSelectionFromState() {
+    const savedIds = registrationFormState?.outlook?.selected_ids;
+    if (!Array.isArray(savedIds) || savedIds.length === 0) return;
+    const savedSet = new Set(savedIds.map(v => parseInt(v)));
+    document.querySelectorAll('.outlook-account-checkbox').forEach(cb => {
+        cb.checked = savedSet.has(parseInt(cb.value));
+    });
+}
+
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
     initEventListeners();
+    loadRegistrationFormState();
+    applyRegistrationFormStateBase();
     loadAvailableServices();
     loadRecentAccounts();
     startAccountsPolling();
@@ -205,6 +397,18 @@ async function loadServiceSelect(apiPath, container, checkbox, selectGroup) {
     checkbox.addEventListener('change', () => {
         if (selectGroup) selectGroup.style.display = checkbox.checked ? 'block' : 'none';
     });
+
+    // 应用本地保存的服务选择
+    if (registrationFormState && container) {
+        const saved = registrationFormState.auto_upload_service_ids || {};
+        if (container === elements.cpaServiceSelect) {
+            applyMultiSelectIdsFromState(container, saved.cpa);
+        } else if (container === elements.sub2apiServiceSelect) {
+            applyMultiSelectIdsFromState(container, saved.sub2api);
+        } else if (container === elements.tmServiceSelect) {
+            applyMultiSelectIdsFromState(container, saved.tm);
+        }
+    }
 }
 
 function toggleMsd(ddId) {
@@ -234,6 +438,9 @@ function getSelectedServiceIds(container) {
 function initEventListeners() {
     // 注册表单提交
     elements.form.addEventListener('submit', handleStartRegistration);
+    // 表单变更持久化
+    elements.form.addEventListener('change', saveRegistrationFormState);
+    elements.form.addEventListener('input', saveRegistrationFormState);
 
     // 注册模式切换
     elements.regMode.addEventListener('change', handleModeChange);
@@ -274,6 +481,13 @@ function initEventListeners() {
     }
     if (elements.cpaForceCheckBtn) {
         elements.cpaForceCheckBtn.addEventListener('click', handleForceCheckCpa);
+    }
+    if (elements.outlookAccountsContainer) {
+        elements.outlookAccountsContainer.addEventListener('change', (e) => {
+            if (e.target && e.target.classList && e.target.classList.contains('outlook-account-checkbox')) {
+                saveRegistrationFormState();
+            }
+        });
     }
 
     // 自动轮询后台系统日志
@@ -539,13 +753,18 @@ function updateEmailServiceOptions() {
         </div>
     `;
 
-    // 默认选中第一个非批量服务
+    // 恢复本地保存的邮箱服务选择
     const allCheckboxes = container.querySelectorAll('.msd-item input[type=checkbox]');
-    const checked = container.querySelectorAll('.msd-item input[type=checkbox]:checked');
-    if (checked.length === 0) {
-        const firstNormal = Array.from(allCheckboxes).find(cb => cb.value !== 'outlook_batch:all');
-        if (firstNormal) firstNormal.checked = true;
+    suppressFormStateSave = true;
+    const applied = applyEmailServiceSelectionFromState(container);
+    if (!applied) {
+        const checked = container.querySelectorAll('.msd-item input[type=checkbox]:checked');
+        if (checked.length === 0) {
+            const firstNormal = Array.from(allCheckboxes).find(cb => cb.value !== 'outlook_batch:all');
+            if (firstNormal) firstNormal.checked = true;
+        }
     }
+    suppressFormStateSave = false;
 
     // 绑定事件
     allCheckboxes.forEach(cb => cb.addEventListener('change', handleEmailServiceSelectionChange));
@@ -642,6 +861,7 @@ function handleConcurrencyModeChange(selectEl, hintEl, intervalGroupEl) {
 // 开始注册
 async function handleStartRegistration(e) {
     e.preventDefault();
+    saveRegistrationFormState();
 
     const selectedValues = getSelectedEmailServiceValues();
     if (selectedValues.length === 0) {
@@ -1321,12 +1541,14 @@ function renderOutlookAccountsList() {
     `).join('');
 
     elements.outlookAccountsContainer.innerHTML = html;
+    applyOutlookAccountSelectionFromState();
 }
 
 // 全选
 function selectAllOutlookAccounts() {
     const checkboxes = document.querySelectorAll('.outlook-account-checkbox');
     checkboxes.forEach(cb => cb.checked = true);
+    saveRegistrationFormState();
 }
 
 // 只选未注册
@@ -1337,12 +1559,14 @@ function selectUnregisteredOutlook() {
         const isRegistered = item.dataset.registered === 'true';
         checkbox.checked = !isRegistered;
     });
+    saveRegistrationFormState();
 }
 
 // 取消全选
 function deselectAllOutlookAccounts() {
     const checkboxes = document.querySelectorAll('.outlook-account-checkbox');
     checkboxes.forEach(cb => cb.checked = false);
+    saveRegistrationFormState();
 }
 
 // 处理 Outlook 批量注册
@@ -1392,6 +1616,8 @@ async function handleOutlookBatchRegistration() {
         auto_upload_tm: elements.autoUploadTm ? elements.autoUploadTm.checked : false,
         tm_service_ids: elements.autoUploadTm && elements.autoUploadTm.checked ? getSelectedServiceIds(elements.tmServiceSelect) : [],
     };
+
+    saveRegistrationFormState();
 
     addLog('info', `[系统] 正在启动 Outlook 批量注册 (${selectedIds.length} 个账户)...`);
 
