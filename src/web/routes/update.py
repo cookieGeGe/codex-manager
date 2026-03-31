@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from ...services.update_service import get_update_service
 
-router = APIRouter(prefix="/update", tags=["update"])
+router = APIRouter(tags=["update"])
 
 
 @router.get("/status")
