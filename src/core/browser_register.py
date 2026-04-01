@@ -325,6 +325,31 @@ class BrowserRegistrationEngine:
 
         return False
 
+    def _is_oauth_consent_page(self, page) -> bool:
+        try:
+            current_url = (page.url or "").lower()
+        except Exception:
+            current_url = ""
+
+        if "/sign-in-with-chatgpt/codex/consent" in current_url:
+            return True
+
+        try:
+            consent_form = page.locator("form[action*='/sign-in-with-chatgpt/codex/consent']")
+            if consent_form.count() > 0:
+                return True
+        except Exception:
+            pass
+
+        try:
+            workspace_id_input = page.locator("input[name='workspace_id']")
+            if workspace_id_input.count() > 0:
+                return True
+        except Exception:
+            pass
+
+        return False
+
     def _click_oauth_consent_continue(self, page) -> bool:
         # 避免把登录页的“继续”误当成 consent 的“继续”
         if self._is_password_login_page(page):
@@ -829,7 +854,13 @@ class BrowserRegistrationEngine:
                                     self._random_delay(1.0, 2.0)
                                     self._handle_oauth_relogin(page)
 
-                                    callback_url = self._capture_oauth_callback(page, timeout_ms=20000)
+                                    callback_url = ""
+                                    if self._is_oauth_consent_page(page):
+                                        self._log("检测到 OAuth Consent 页面，立即点击继续并捕获回调...")
+                                        self._click_oauth_consent_continue(page)
+                                        callback_url = self._capture_oauth_callback(page, timeout_ms=12000)
+                                    else:
+                                        callback_url = self._capture_oauth_callback(page, timeout_ms=6000)
                                     if not callback_url:
                                         # 先补一次登录处理，避免停在密码页时误点 Continue
                                         self._handle_oauth_relogin(page)

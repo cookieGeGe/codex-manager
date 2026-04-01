@@ -493,6 +493,7 @@ def test_oauth_submit_consent_form_supports_button_without_type_and_html_navigat
     post_data = session.calls[0]["kwargs"]["data"]
     assert post_data["csrf_token"] == "csrf-1"
     assert post_data["decision"] == "allow"
+    assert "action" not in post_data
 
 
 def test_oauth_submit_consent_form_falls_back_to_authorize_continue_api():
@@ -545,6 +546,40 @@ def test_oauth_submit_consent_form_falls_back_to_authorize_continue_api():
     assert code == "code-consent-2"
     api_data = json.loads(session.calls[1]["kwargs"]["data"])
     assert api_data["action"] == "default"
+
+
+def test_oauth_submit_consent_form_sets_default_action_for_authorize_continue_form():
+    session = QueueSession([
+        (
+            "POST",
+            "https://auth.openai.com/api/accounts/authorize/continue",
+            DummyResponse(
+                status_code=302,
+                headers={"Location": "http://localhost:1455/auth/callback?code=code-consent-3&state=state-1"},
+            ),
+        ),
+    ])
+    engine = RegistrationEngine(FakeEmailService(["123456"]))
+    html_text = """
+    <html>
+      <form action="/api/accounts/authorize/continue" method="post">
+        <input type="hidden" name="csrf_token" value="csrf-3" />
+        <button type="submit">继续</button>
+      </form>
+    </html>
+    """
+
+    code = engine._oauth_submit_consent_form(
+        session=session,
+        page_url="https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+        html_text=html_text,
+        redirect_uri="http://localhost:1455/auth/callback",
+    )
+
+    assert code == "code-consent-3"
+    post_data = session.calls[0]["kwargs"]["data"]
+    assert post_data["csrf_token"] == "csrf-3"
+    assert post_data["action"] == "default"
 
 
 def test_oauth_exchange_auth_code_visits_oauth_authorize_entry_first():

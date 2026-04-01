@@ -1115,12 +1115,20 @@ class RegistrationEngine:
                 payload = self._extract_hidden_inputs(html_text)
                 payload.update(self._extract_submit_field(html_text))
 
-            if "action" not in payload:
+            action_path = ""
+            try:
+                action_path = (urlparse(action_url).path or "").lower()
+            except Exception:
+                action_path = (action_url or "").lower()
+
+            # 对 codex consent 页面不强加 action 字段，尽量还原真实表单提交
+            needs_default_action = "/api/accounts/authorize/continue" in action_path
+            if needs_default_action and "action" not in payload:
                 payload["action"] = "default"
 
             headers = {
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": self.AUTH,
+                "Origin": self.oauth_issuer,
                 "Referer": page_url,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             }
