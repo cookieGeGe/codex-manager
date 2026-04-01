@@ -340,6 +340,8 @@ class RegistrationEngine:
         self._otp_sent_at: Optional[float] = None
         self._callback_url = None
         self._final_callback_url = None
+        self._oauth_login_did: str = ""
+        self._oauth_login_sentinel: str = ""
 
         self.BASE = "https://chatgpt.com"
         self.AUTH = "https://auth.openai.com"
@@ -1108,15 +1110,19 @@ class RegistrationEngine:
     ) -> Optional[str]:
         """Consent 兜底：调用 authorize/continue API 后继续提取 code。"""
         payload_candidates = ({"action": "default"}, {"action": "accept"}, {})
+        sentinel_header = self._oauth_login_sentinel or ""
         for payload in payload_candidates:
             try:
+                headers = {
+                    "referer": page_url,
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                }
+                if sentinel_header:
+                    headers["openai-sentinel-token"] = sentinel_header
                 resp = session.post(
                     OPENAI_API_ENDPOINTS["signup"],
-                    headers={
-                        "referer": page_url,
-                        "accept": "application/json",
-                        "content-type": "application/json",
-                    },
+                    headers=headers,
                     data=json.dumps(payload),
                     timeout=20,
                     allow_redirects=False,
@@ -2564,6 +2570,8 @@ class RegistrationEngine:
                     sen_token = http_client.check_sentinel(did)
                     if not sen_token:
                         self._log("Sentinel 校验失败，尝试继续 OAuth 登录流程", "warning")
+                    self._oauth_login_did = did or ""
+                    self._oauth_login_sentinel = sen_token or ""
 
                     login_start = self._oauth_submit_login_start(session, did, sen_token)
                     if not login_start.success:
