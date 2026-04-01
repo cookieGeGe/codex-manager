@@ -813,6 +813,24 @@ class RegistrationEngine:
             self._log(msg, "warning")
             raise OAuthPhoneRequiredError(msg)
 
+    def _handle_about_you(self, source: str) -> bool:
+        """在 OAuth 登录流程中遇到 about_you 时补全资料并准备重新授权。"""
+        try:
+            user_info = generate_random_user_info()
+            name = user_info.get("name") or "User"
+            birthdate = user_info.get("birthdate") or "1990-01-01"
+            self._log(f"{source}命中 about-you，提交资料后重试 OAuth 授权", "warning")
+            status, _data = self.create_account(name, birthdate)
+            if status == 200:
+                # 尝试回调完成流程
+                self.callback()
+                return True
+            self._log(f"about-you 提交失败: HTTP {status}", "warning")
+            return False
+        except Exception as e:
+            self._log(f"about-you 处理异常: {e}", "warning")
+            return False
+
     def _auth0_submit_identifier(
         self,
         state: str,
@@ -1657,12 +1675,22 @@ class RegistrationEngine:
                         if not password_result.success or not password_result.is_existing_account:
                             if password_result.error_message == "PHONE_REQUIRED":
                                 raise OAuthPhoneRequiredError("登录密码阶段需要手机号验证")
+                            if (password_result.page_type or "") == "about_you":
+                                self._handle_about_you("登录密码阶段")
+                                last_error = "登录密码阶段命中 about-you，已尝试补全资料"
+                                self._log(last_error, "warning")
+                                continue
                             last_error = f"登录密码阶段未进入验证码页面: {password_result.page_type or 'unknown'}"
                             self._log(last_error, "warning")
                             continue
                     elif login_start.page_type == OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"]:
                         self._log("已进入验证码页面，跳过密码步骤")
                     else:
+                        if login_start.page_type == "about_you":
+                            self._handle_about_you("登录入口")
+                            last_error = "登录入口命中 about-you，已尝试补全资料"
+                            self._log(last_error, "warning")
+                            continue
                         if self._is_phone_required(page_type=login_start.page_type):
                             raise OAuthPhoneRequiredError("登录入口需要手机号验证")
                         last_error = f"登录入口未进入预期页面: {login_start.page_type}"
