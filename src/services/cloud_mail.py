@@ -35,6 +35,7 @@ class CloudMailService(BaseEmailService):
             "max_retries": 3,
             "poll_interval": 3,
             "time_tolerance": 43200,
+            "otp_sent_time_skew_seconds": 12,
             "prefix": "oc",
             "token_bytes": 3,
             "page_size": 5,
@@ -327,16 +328,21 @@ class CloudMailService(BaseEmailService):
 
                 found_code = None
                 last_message_id = self._last_message_id_cache.get(email, "")
+                last_code = self._last_code_cache.get(email, "")
+                skew_seconds = int(self.config.get("otp_sent_time_skew_seconds") or 12)
+                skew_seconds = max(0, min(skew_seconds, 60))
+                cutoff_ts = (otp_sent_at - skew_seconds) if otp_sent_at else None
+                candidates: List[Dict[str, Any]] = []
                 for message in messages:
                     if not isinstance(message, dict):
                         continue
                     msg_id = self._extract_message_id(message)
-                    if msg_id and last_message_id and msg_id == last_message_id:
-                        continue
                     msg_time = self._extract_message_timestamp(message)
-                    if otp_sent_at and msg_time:
-                        tolerance = int(self.config.get("time_tolerance") or 43200)
-                        if msg_time < otp_sent_at - tolerance:
+                    if cutoff_ts is not None:
+                        if msg_time is None:
+                            # 在 OAuth 二次登录阶段必须严格按时间窗口取码，避免吞旧码
+                            continue
+                        if msg_time < cutoff_ts:
                             continue
 
                     content = self._extract_message_text(message)
@@ -347,8 +353,22 @@ class CloudMailService(BaseEmailService):
                         code = self._extract_code_from_text(raw_blob, pattern)
 
                     if code:
-                        last_code = self._last_code_cache.get(email)
-                        if last_code == code:
+                        candidates.append(
+                            {
+                                "code": code,
+                                "msg_id": msg_id,
+                                "msg_time": float(msg_time) if msg_time is not None else float("-inf"),
+                            }
+                        )
+
+                if candidates:
+                    candidates.sort(key=lambda item: item["msg_time"], reverse=True)
+                    for candidate in candidates:
+                        code = str(candidate.get("code") or "")
+                        msg_id = str(candidate.get("msg_id") or "")
+                        if msg_id and last_message_id and msg_id == last_message_id:
+                            continue
+                        if not msg_id and last_code and code == last_code:
                             continue
                         self._last_code_cache[email] = code
                         if msg_id:

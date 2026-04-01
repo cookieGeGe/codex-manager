@@ -1057,6 +1057,8 @@ class RegistrationEngine:
                 r'value=["\']([^"\']+)["\'][^>]*name=["\']workspace_id["\']',
                 r'"workspace_id"\s*:\s*"([^"]+)"',
                 r'"workspaceId"\s*:\s*"([^"]+)"',
+                r'"default_workspace_id"\s*:\s*"([^"]+)"',
+                r'"workspaces"\s*:\s*\[\s*\{\s*"id"\s*:\s*"([^"]+)"',
             )
             for pattern in patterns:
                 match = re.search(pattern, text, flags=re.IGNORECASE)
@@ -1197,6 +1199,23 @@ class RegistrationEngine:
             action_url: Optional[str] = None
             payload: Dict[str, str] = {}
             workspace_id_hint = self._extract_workspace_id_from_html(html_text) or ""
+            if not workspace_id_hint:
+                try:
+                    for cookie_name in (
+                        "oai-client-auth-session",
+                        "oai_client_auth_session",
+                        "oai-client-auth-info",
+                        "oai_client_auth_info",
+                    ):
+                        for raw_cookie in self._extract_cookie_values(session, cookie_name):
+                            workspace_id_hint = self._extract_workspace_id_from_cookie(raw_cookie) or ""
+                            if workspace_id_hint:
+                                self._log(f"Consent 从 {cookie_name} 提取到 workspace_id: {workspace_id_hint}")
+                                break
+                        if workspace_id_hint:
+                            break
+                except Exception:
+                    pass
 
             forms = re.findall(r"<form[^>]*>.*?</form>", html_text, flags=re.IGNORECASE | re.DOTALL)
             if forms:

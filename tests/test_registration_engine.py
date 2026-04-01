@@ -702,6 +702,66 @@ def test_extract_workspace_id_from_html_supports_value_before_name():
     assert workspace_id == "ws-order-1"
 
 
+def test_extract_workspace_id_from_html_supports_default_workspace_id():
+    engine = RegistrationEngine(FakeEmailService(["123456"]))
+    html_text = """
+    <script id="bootstrap-inert-script" type="application/json">
+      {"default_workspace_id":"ws-default-1"}
+    </script>
+    """
+    workspace_id = engine._extract_workspace_id_from_html(html_text)
+    assert workspace_id == "ws-default-1"
+
+
+def test_extract_workspace_id_from_html_supports_workspaces_array():
+    engine = RegistrationEngine(FakeEmailService(["123456"]))
+    html_text = """
+    <script type="application/json">
+      {"workspaces":[{"id":"ws-array-1"},{"id":"ws-array-2"}]}
+    </script>
+    """
+    workspace_id = engine._extract_workspace_id_from_html(html_text)
+    assert workspace_id == "ws-array-1"
+
+
+def test_oauth_submit_consent_form_uses_workspace_from_cookie_when_html_missing():
+    session = QueueSession([
+        (
+            "POST",
+            OPENAI_API_ENDPOINTS["select_workspace"],
+            DummyResponse(
+                status_code=200,
+                payload={"continue_url": "https://auth.example.test/continue-cookie-ws"},
+                text='{"continue_url":"https://auth.example.test/continue-cookie-ws"}',
+            ),
+        ),
+        (
+            "GET",
+            "https://auth.example.test/continue-cookie-ws",
+            DummyResponse(
+                status_code=302,
+                headers={"Location": "http://localhost:1455/auth/callback?code=code-cookie-ws-1&state=state-1"},
+            ),
+        ),
+    ])
+    session.cookies["oai-client-auth-session"] = _workspace_cookie("ws-cookie-1")
+    engine = RegistrationEngine(FakeEmailService(["123456"]))
+    html_text = """
+    <form action="/sign-in-with-chatgpt/codex/consent" method="post">
+      <button type="submit">继续</button>
+    </form>
+    """
+
+    code = engine._oauth_submit_consent_form(
+        session=session,
+        page_url="https://auth.openai.com/sign-in-with-chatgpt/codex/consent",
+        html_text=html_text,
+        redirect_uri="http://localhost:1455/auth/callback",
+    )
+
+    assert code == "code-cookie-ws-1"
+
+
 def test_register_retries_on_transient_502_and_succeeds(monkeypatch):
     session = QueueSession([
         (
