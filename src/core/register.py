@@ -543,6 +543,130 @@ class RegistrationEngine:
             except Exception:
                 pass
 
+    @staticmethod
+    def _short_log_text(value: Any, limit: int = 220) -> str:
+        text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(20, limit)] + "..."
+
+    def _iter_session_cookie_items(self, session: Any) -> list[tuple[str, str]]:
+        items: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        try:
+            jar = getattr(getattr(session, "cookies", None), "jar", None)
+            if jar is not None:
+                for item in list(jar):
+                    name = str(getattr(item, "name", "") or "").strip()
+                    value = str(getattr(item, "value", "") or "")
+                    if not name:
+                        continue
+                    pair = (name, value)
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                    items.append(pair)
+        except Exception:
+            pass
+        if items:
+            return items
+
+        try:
+            cookie_obj = getattr(session, "cookies", None)
+            if cookie_obj is None:
+                return items
+            for name, value in list(getattr(cookie_obj, "items", lambda: [])()):
+                name_str = str(name or "").strip()
+                value_str = str(value or "")
+                if not name_str:
+                    continue
+                pair = (name_str, value_str)
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                items.append(pair)
+        except Exception:
+            pass
+        return items
+
+    def _oauth_debug_cookie_snapshot(self, session: Any, stage: str, *, max_names: int = 40) -> None:
+        try:
+            items = self._iter_session_cookie_items(session)
+            if not items:
+                self._log(f"{stage} Cookie诊断: 未读取到任何 Cookie", "warning")
+                return
+
+            names = sorted({name for name, _ in items})
+            self._log(
+                f"{stage} Cookie诊断: total={len(items)}, names={', '.join(names[:max_names])}",
+                "warning",
+            )
+
+            candidate_values: list[str] = []
+            for name, raw_value in items:
+                lname = name.lower()
+                if (
+                    "callback" not in lname
+                    and "redirect" not in lname
+                    and "session" not in lname
+                    and lname not in ("oai-client-auth-info", "oai-client-auth-session", "unified_session_manifest")
+                ):
+                    continue
+                decoded = str(raw_value or "")
+                try:
+                    decoded = unquote(decoded)
+                except Exception:
+                    pass
+                code = _extract_code_from_url(decoded)
+                marker = f"code_len={len(code)}" if code else "code=none"
+                candidate_values.append(
+                    f"{name}({marker}): {self._short_log_text(decoded, 180)}"
+                )
+            if candidate_values:
+                self._log(
+                    f"{stage} Cookie候选值: {' | '.join(candidate_values[:6])}",
+                    "warning",
+                )
+        except Exception as e:
+            self._log(f"{stage} Cookie诊断异常: {e}", "warning")
+
+    def _oauth_debug_response_probe(
+        self,
+        stage: str,
+        resp: Optional[Response],
+        *,
+        response_text: str = "",
+        redirect_uri: str = "",
+    ) -> None:
+        if resp is None:
+            self._log(f"{stage} 响应探测: 响应为空", "warning")
+            return
+        try:
+            text = response_text if isinstance(response_text, str) and response_text else (resp.text or "")
+            loc = str(resp.headers.get("Location", "") or "").strip()
+            content_type = str(resp.headers.get("Content-Type", "") or "").strip()
+            callback_url = self._extract_redirect_from_html(text, redirect_uri or self.oauth_redirect_uri)
+            nav_url = self._extract_navigation_url_from_html(text, base_url=str(resp.url))
+            self._log(
+                (
+                    f"{stage} 响应探测: status={resp.status_code}, "
+                    f"url={self._short_log_text(str(resp.url), 140)}, "
+                    f"location={self._short_log_text(loc, 140) or '-'}, "
+                    f"content_type={self._short_log_text(content_type, 80) or '-'}, "
+                    f"text_len={len(text)}, "
+                    f"callback={self._short_log_text(callback_url, 140) or '-'}, "
+                    f"nav={self._short_log_text(nav_url, 140) or '-'}"
+                ),
+                "warning",
+            )
+            if text:
+                self._log(
+                    f"{stage} 响应片段: {self._short_log_text(text, 260)}",
+                    "warning",
+                )
+        except Exception as e:
+            self._log(f"{stage} 响应探测异常: {e}", "warning")
+
     def _request_with_retry(
         self,
         method: str,
@@ -1602,7 +1726,7 @@ class RegistrationEngine:
         if self.oauth_enable_legacy_consent_payloads:
             payload_candidates = ({}, {"action": "default"}, {"action": "accept"})
         sentinel_header = self._oauth_login_sentinel or ""
-        for payload in payload_candidates:
+        for idx, payload in enumerate(payload_candidates, start=1):
             try:
                 headers = {
                     "referer": page_url,
@@ -1623,6 +1747,12 @@ class RegistrationEngine:
                 continue
 
             self._log(f"Consent API 兜底状态: {resp.status_code} (payload={payload})")
+            self._oauth_debug_response_probe(
+                f"Consent API 兜底[{idx}]",
+                resp,
+                response_text=resp.text or "",
+                redirect_uri=redirect_uri,
+            )
 
             cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=redirect_uri)
             if cookie_code:
@@ -1650,6 +1780,13 @@ class RegistrationEngine:
                     resp_data = {}
                 continue_url = str((resp_data or {}).get("continue_url") or "").strip()
                 page_type = str((((resp_data or {}).get("page") or {}).get("type")) or "")
+                self._log(
+                    (
+                        f"Consent API 兜底[{idx}] 解析: continue_url={self._short_log_text(continue_url, 140) or '-'}, "
+                        f"page_type={page_type or '-'}, keys={','.join(sorted((resp_data or {}).keys())[:20]) or '-'}"
+                    ),
+                    "warning",
+                )
                 self._raise_if_phone_required(
                     url=continue_url,
                     page_type=page_type,
@@ -1698,6 +1835,12 @@ class RegistrationEngine:
                                 allow_redirects=True,
                                 timeout=20,
                             )
+                            self._oauth_debug_response_probe(
+                                f"Consent API 兜底[{idx}]自动重定向",
+                                auto_resp,
+                                response_text=auto_resp.text or "",
+                                redirect_uri=redirect_uri,
+                            )
                             code = _extract_code_from_url(str(auto_resp.url))
                             if not code and getattr(auto_resp, "history", None):
                                 for hist in auto_resp.history:
@@ -1737,6 +1880,7 @@ class RegistrationEngine:
             cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=redirect_uri)
             if cookie_code:
                 return cookie_code
+            self._oauth_debug_cookie_snapshot(session, f"Consent API 兜底[{idx}]结束仍无code")
 
         return None
 
@@ -1828,6 +1972,15 @@ class RegistrationEngine:
                 action_path = (urlparse(action_url).path or "").lower()
             except Exception:
                 action_path = (action_url or "").lower()
+            self._log(
+                (
+                    f"Consent 表单解析: page_url={self._short_log_text(page_url, 130)}, "
+                    f"action={self._short_log_text(action_url, 130)}, action_path={action_path or '-'}, "
+                    f"payload_keys={','.join(sorted(payload.keys())[:20]) or '-'}, "
+                    f"workspace_hint={workspace_id_hint or '-'}"
+                ),
+                "warning",
+            )
 
             # 对 codex consent 页面不强加 action 字段，尽量还原真实表单提交
             needs_default_action = "/api/accounts/authorize/continue" in action_path
@@ -1859,6 +2012,12 @@ class RegistrationEngine:
             )
 
             self._log(f"Consent 表单提交状态: {resp.status_code}, URL: {str(resp.url)[:120]}...")
+            self._oauth_debug_response_probe(
+                "Consent 表单提交",
+                resp,
+                response_text=resp.text or "",
+                redirect_uri=redirect_uri,
+            )
             workspace_id_hint = str(payload.get("workspace_id") or workspace_id_hint or "").strip()
 
             self._raise_if_phone_required(
@@ -1918,6 +2077,7 @@ class RegistrationEngine:
                         )
                         if emergency_code:
                             return emergency_code
+                    self._oauth_debug_cookie_snapshot(session, "Consent 405 分支结束仍无code")
 
             if resp.status_code in (301, 302, 303, 307, 308):
                 loc = resp.headers.get("Location", "")
@@ -1960,6 +2120,7 @@ class RegistrationEngine:
                     return api_fallback_code
 
             # 页面无直接 callback，尝试继续跟随当前 URL
+            self._oauth_debug_cookie_snapshot(session, "Consent 表单结束前仍无code")
             return self._oauth_follow_and_extract_code(session, str(resp.url))
         except Exception as e:
             self._log(f"提交 Consent 表单失败: {e}", "warning")
@@ -3029,16 +3190,28 @@ class RegistrationEngine:
         if cookie_code:
             return cookie_code
         current_url = url
-        for _ in range(max_depth):
+        for step in range(1, max_depth + 1):
             if current_url.startswith("/"):
                 current_url = f"{self.oauth_issuer}{current_url}"
             try:
+                self._log(
+                    f"OAuth 跟随跳转[{step}/{max_depth}] 请求: {self._short_log_text(current_url, 160)}",
+                    "warning",
+                )
                 resp = session.get(current_url, allow_redirects=False, timeout=15)
             except Exception as e:
                 # 有时重定向到 localhost 会触发连接异常，尝试从错误信息里抓 code
                 m = re.search(r"(https?://localhost[^\s'\"]+)", str(e))
                 if m:
+                    self._log(
+                        f"OAuth 跟随跳转[{step}/{max_depth}] 异常中提取到 localhost 回调",
+                        "warning",
+                    )
                     return _extract_code_from_url(m.group(1))
+                self._log(
+                    f"OAuth 跟随跳转[{step}/{max_depth}] 请求异常: {self._short_log_text(e, 220)}",
+                    "warning",
+                )
                 cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=self.oauth_redirect_uri)
                 if cookie_code:
                     return cookie_code
@@ -3048,6 +3221,14 @@ class RegistrationEngine:
                 url=str(resp.url),
                 text=resp.text or "",
                 stage="OAuth 跟随跳转",
+            )
+            self._log(
+                (
+                    f"OAuth 跟随跳转[{step}/{max_depth}] 响应: "
+                    f"status={resp.status_code}, url={self._short_log_text(str(resp.url), 150)}, "
+                    f"location={self._short_log_text(resp.headers.get('Location', ''), 150) or '-'}"
+                ),
+                "warning",
             )
             if resp.status_code in (301, 302, 303, 307, 308):
                 loc = resp.headers.get("Location", "")
@@ -3059,6 +3240,7 @@ class RegistrationEngine:
                     cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=self.oauth_redirect_uri)
                     if cookie_code:
                         return cookie_code
+                    self._oauth_debug_cookie_snapshot(session, f"OAuth 跟随跳转[{step}]缺少Location")
                     return None
                 current_url = urljoin(current_url, loc)
                 continue
@@ -3080,6 +3262,14 @@ class RegistrationEngine:
                     resp.text or "",
                     base_url=str(resp.url),
                 )
+                self._log(
+                    (
+                        f"OAuth 跟随跳转[{step}/{max_depth}] 解析: "
+                        f"callback={self._short_log_text(callback_url, 150) or '-'}, "
+                        f"nav={self._short_log_text(nav_url, 150) or '-'}"
+                    ),
+                    "warning",
+                )
                 code = _extract_code_from_url(nav_url or "")
                 if code:
                     return code
@@ -3089,15 +3279,18 @@ class RegistrationEngine:
                 cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=self.oauth_redirect_uri)
                 if cookie_code:
                     return cookie_code
+                self._oauth_debug_cookie_snapshot(session, f"OAuth 跟随跳转[{step}]200无code")
                 return None
 
             cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=self.oauth_redirect_uri)
             if cookie_code:
                 return cookie_code
+            self._oauth_debug_cookie_snapshot(session, f"OAuth 跟随跳转[{step}]非200/3xx无code")
             return None
         cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=self.oauth_redirect_uri)
         if cookie_code:
             return cookie_code
+        self._oauth_debug_cookie_snapshot(session, "OAuth 跟随跳转达到最大深度仍无code")
         return None
 
     def _oauth_extract_code_from_exception(
@@ -3112,9 +3305,12 @@ class RegistrationEngine:
             if m:
                 code = _extract_code_from_url(m.group(1))
                 if code:
+                    self._log("OAuth 异常中捕获到 localhost 回调 code", "warning")
                     return code
         except Exception:
             pass
+        self._log(f"OAuth 异常提码失败，回退 Cookie: {self._short_log_text(err, 220)}", "warning")
+        self._oauth_debug_cookie_snapshot(session, "OAuth 异常分支")
         return self._extract_oauth_code_from_session_cookies(session, redirect_uri=redirect_uri)
 
     def _oauth_follow_candidate_urls_for_code(
@@ -3125,20 +3321,29 @@ class RegistrationEngine:
     ) -> Optional[str]:
         """按顺序跟随候选 URL，尝试提取 OAuth code。"""
         visited: set[str] = set()
-        for candidate in candidate_urls:
+        for idx, candidate in enumerate(candidate_urls, start=1):
             url = str(candidate or "").strip()
             if not url or url in visited:
                 continue
             visited.add(url)
+            self._log(
+                f"OAuth 候选回跳[{idx}] -> {self._short_log_text(url, 170)}",
+                "warning",
+            )
             direct_code = _extract_code_from_url(url)
             if direct_code:
+                self._log(f"OAuth 候选回跳[{idx}] 直接命中 code", "warning")
                 return direct_code
             code = self._oauth_follow_and_extract_code(session, url)
             if code:
+                self._log(f"OAuth 候选回跳[{idx}] 跟随链路命中 code", "warning")
                 return code
             cookie_code = self._extract_oauth_code_from_session_cookies(session, redirect_uri=redirect_uri)
             if cookie_code:
+                self._log(f"OAuth 候选回跳[{idx}] 从 Cookie 命中 code", "warning")
                 return cookie_code
+        if candidate_urls:
+            self._oauth_debug_cookie_snapshot(session, "OAuth 候选回跳结束仍无code")
         return None
 
     def _oauth_visit_authorize_entry(
@@ -3164,6 +3369,10 @@ class RegistrationEngine:
 
             if resp_entry.status_code in (301, 302, 303, 307, 308):
                 loc = resp_entry.headers.get("Location", "")
+                self._log(
+                    f"OAuth Authorize 入口Location: {self._short_log_text(loc, 180) or '-'}",
+                    "warning",
+                )
                 self._raise_if_phone_required(url=loc, stage="OAuth Authorize 入口(Location)")
                 entry_next = urljoin(oauth_start.auth_url, loc) if loc else ""
                 if entry_next and "/sign-in-with-chatgpt/codex/consent" in entry_next:
@@ -3188,6 +3397,12 @@ class RegistrationEngine:
                     return code, consent_url
 
                 nav_url = self._extract_navigation_url_from_html(resp_entry.text or "", base_url=str(resp_entry.url))
+                self._oauth_debug_response_probe(
+                    "OAuth Authorize 入口(200)",
+                    resp_entry,
+                    response_text=resp_entry.text or "",
+                    redirect_uri=oauth_start.redirect_uri,
+                )
                 if nav_url and "/sign-in-with-chatgpt/codex/consent" in nav_url:
                     consent_url = nav_url
                     return None, consent_url
@@ -3203,6 +3418,7 @@ class RegistrationEngine:
                     consent_url = str(resp_entry.url)
                     return None, consent_url
         except Exception as e:
+            self._log(f"OAuth Authorize 入口异常: {self._short_log_text(e, 220)}", "warning")
             code = self._oauth_extract_code_from_exception(
                 session,
                 e,
@@ -3227,6 +3443,14 @@ class RegistrationEngine:
                 allow_redirects=False,
                 timeout=30,
             )
+            self._log(
+                (
+                    f"OAuth Consent 入口响应: status={resp_consent.status_code}, "
+                    f"url={self._short_log_text(str(resp_consent.url), 150)}, "
+                    f"location={self._short_log_text(resp_consent.headers.get('Location', ''), 150) or '-'}"
+                ),
+                "warning",
+            )
             self._raise_if_phone_required(
                 url=str(resp_consent.url),
                 text=resp_consent.text or "",
@@ -3243,6 +3467,13 @@ class RegistrationEngine:
                 )
 
             if resp_consent.status_code != 200:
+                self._oauth_debug_response_probe(
+                    "OAuth Consent 非200",
+                    resp_consent,
+                    response_text=resp_consent.text or "",
+                    redirect_uri=oauth_start.redirect_uri,
+                )
+                self._oauth_debug_cookie_snapshot(session, "OAuth Consent 非200后")
                 return self._extract_oauth_code_from_session_cookies(
                     session,
                     redirect_uri=oauth_start.redirect_uri,
@@ -3266,6 +3497,7 @@ class RegistrationEngine:
                 return cookie_code
 
             # 表单提交后仍无 code，继续跟随真实链路进行回跳提取。
+            self._log("OAuth Consent 表单后仍无 code，进入候选回跳链路", "warning")
             return self._oauth_follow_candidate_urls_for_code(
                 session,
                 [
@@ -3276,6 +3508,7 @@ class RegistrationEngine:
                 redirect_uri=oauth_start.redirect_uri,
             )
         except Exception as e:
+            self._log(f"OAuth Consent 阶段异常: {self._short_log_text(e, 220)}", "warning")
             return self._oauth_extract_code_from_exception(
                 session,
                 e,
@@ -3405,6 +3638,12 @@ class RegistrationEngine:
                 allow_redirects=True,
                 timeout=30,
             )
+            self._oauth_debug_response_probe(
+                "OAuth 最终重定向兜底",
+                resp_fallback,
+                response_text=resp_fallback.text or "",
+                redirect_uri=oauth_start.redirect_uri,
+            )
             self._raise_if_phone_required(
                 url=str(resp_fallback.url),
                 text=resp_fallback.text or "",
@@ -3420,6 +3659,7 @@ class RegistrationEngine:
                     code = _extract_code_from_url(loc)
                     if code:
                         return code
+            self._oauth_debug_cookie_snapshot(session, "OAuth 最终兜底后仍无code")
             return self._extract_oauth_code_from_session_cookies(
                 session,
                 redirect_uri=oauth_start.redirect_uri,
@@ -3455,11 +3695,24 @@ class RegistrationEngine:
         if not self.oauth_enable_workspace_fallback:
             self._log("Consent 链路暂未提取到 code，已禁用 workspace/organization 旁路", "warning")
 
-        return self._oauth_try_final_redirect_fallback(
+        fallback_code = self._oauth_try_final_redirect_fallback(
             session,
             consent_url=consent_url,
             oauth_start=oauth_start,
         )
+        if fallback_code:
+            return fallback_code
+
+        self._log(
+            (
+                "OAuth 授权码提取失败诊断: "
+                f"authorize_url={self._short_log_text(oauth_start.auth_url, 160)}, "
+                f"consent_url={self._short_log_text(consent_url, 160)}"
+            ),
+            "warning",
+        )
+        self._oauth_debug_cookie_snapshot(session, "OAuth 授权码提取最终失败")
+        return None
 
     def _oauth_handle_callback(
         self,
