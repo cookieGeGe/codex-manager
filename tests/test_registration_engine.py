@@ -778,3 +778,73 @@ def test_oauth_submit_authorize_continue_api_extracts_workspace_from_payload():
     )
 
     assert code == "code-api-ws-1"
+
+
+def test_oauth_login_flow_retries_otp_once_when_first_validate_fails(monkeypatch):
+    email_service = FakeEmailService(["123456", "654321"])
+    engine = RegistrationEngine(email_service)
+    engine.email = "tester@example.com"
+    engine.password = "pass-1234"
+
+    class DummyOAuthManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start_oauth(self):
+            return OAuthStart(
+                auth_url="https://auth.example.test/flow/1",
+                state="state-1",
+                code_verifier="verifier-1",
+                redirect_uri="http://localhost:1455/auth/callback",
+            )
+
+        def handle_callback(self, callback_url, expected_state, code_verifier):
+            return {
+                "access_token": "access-1",
+                "refresh_token": "refresh-1",
+                "id_token": "id-1",
+            }
+
+    class DummyHttpClient:
+        def __init__(self, proxy_url=None):
+            self.session = SimpleNamespace(cookies={"__Secure-next-auth.session-token": "session-otp-retry"})
+
+        def check_sentinel(self, did):
+            return "sentinel-token"
+
+    monkeypatch.setattr("src.core.register.OAuthManager", DummyOAuthManager)
+    monkeypatch.setattr("src.core.register.OpenAIHTTPClient", DummyHttpClient)
+    monkeypatch.setattr(engine, "_oauth_get_device_id", lambda session, auth_url: "did-1")
+    monkeypatch.setattr(
+        engine,
+        "_oauth_submit_login_start",
+        lambda session, did, sen: SignupFormResult(
+            success=True,
+            page_type=OPENAI_PAGE_TYPES["LOGIN_PASSWORD"],
+            is_existing_account=False,
+        ),
+    )
+    monkeypatch.setattr(
+        engine,
+        "_oauth_submit_login_password",
+        lambda session: SignupFormResult(
+            success=True,
+            page_type=OPENAI_PAGE_TYPES["EMAIL_OTP_VERIFICATION"],
+            is_existing_account=True,
+        ),
+    )
+
+    validate_calls = {"count": 0}
+
+    def validate_once_fail_then_pass(session, code):
+        validate_calls["count"] += 1
+        return validate_calls["count"] >= 2
+
+    monkeypatch.setattr(engine, "_oauth_validate_verification_code", validate_once_fail_then_pass)
+    monkeypatch.setattr(engine, "_oauth_exchange_auth_code", lambda session, oauth_start: "auth-code-otp-retry")
+
+    token_info = engine._get_oauth_tokens_via_login_flow()
+
+    assert token_info is not None
+    assert token_info["access_token"] == "access-1"
+    assert validate_calls["count"] == 2

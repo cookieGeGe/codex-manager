@@ -2436,9 +2436,20 @@ class RegistrationEngine:
 
                         self._log("校验邮箱验证码")
                         if not self._oauth_validate_verification_code(session, code):
-                            last_error = "验证码校验失败"
-                            self._log(last_error, "warning")
-                            continue
+                            self._log("验证码校验失败，尝试重新获取最新验证码后重试一次", "warning")
+                            retry_code = self.wait_for_verification_email(timeout=45)
+                            if retry_code and retry_code != code:
+                                self._log("使用重试验证码再次校验")
+                                if self._oauth_validate_verification_code(session, retry_code):
+                                    self._log("重试验证码校验成功")
+                                else:
+                                    last_error = "验证码校验失败"
+                                    self._log(last_error, "warning")
+                                    continue
+                            else:
+                                last_error = "验证码校验失败"
+                                self._log(last_error, "warning")
+                                continue
                     else:
                         self._log("本次流程无需邮箱验证码，直接进入授权码提取")
 

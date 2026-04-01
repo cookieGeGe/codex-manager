@@ -69,6 +69,7 @@ class CloudMailService(BaseEmailService):
 
         self._email_cache: Dict[str, Dict[str, Any]] = {}
         self._last_code_cache: Dict[str, str] = {}
+        self._last_message_id_cache: Dict[str, str] = {}
 
     def _resolve_domain(self, config: Dict[str, Any]) -> str:
         domain = (
@@ -214,6 +215,21 @@ class CloudMailService(BaseEmailService):
 
         return " ".join(parts).strip()
 
+    def _extract_message_id(self, message: Dict[str, Any]) -> str:
+        """提取邮件唯一标识，避免重复消费旧邮件。"""
+        id_candidates = ("emailId", "id", "mailId", "messageId", "msgId")
+        for key in id_candidates:
+            value = message.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        nested = message.get("data")
+        if isinstance(nested, dict):
+            for key in id_candidates:
+                value = nested.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        return ""
+
     def _extract_code_from_text(self, text: str, pattern: str) -> Optional[str]:
         """从文本中提取验证码，优先语义匹配。"""
         if not text:
@@ -310,8 +326,12 @@ class CloudMailService(BaseEmailService):
                     continue
 
                 found_code = None
+                last_message_id = self._last_message_id_cache.get(email, "")
                 for message in messages:
                     if not isinstance(message, dict):
+                        continue
+                    msg_id = self._extract_message_id(message)
+                    if msg_id and last_message_id and msg_id == last_message_id:
                         continue
                     msg_time = self._extract_message_timestamp(message)
                     if otp_sent_at and msg_time:
@@ -331,6 +351,8 @@ class CloudMailService(BaseEmailService):
                         if last_code == code:
                             continue
                         self._last_code_cache[email] = code
+                        if msg_id:
+                            self._last_message_id_cache[email] = msg_id
                         logger.info(f"CloudMail 获取验证码成功: {code}")
                         self.update_status(True)
                         found_code = code
