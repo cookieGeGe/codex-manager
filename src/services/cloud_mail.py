@@ -331,6 +331,13 @@ class CloudMailService(BaseEmailService):
             for code in (exclude_codes or [])
             if str(code or "").strip()
         }
+        strict_time_filter = bool(excluded)
+        time_filter_relaxed = False
+        # 每次取码调用都重置一次调试开关，避免多任务时后续调用失去诊断日志
+        self._debug_dumped = False
+        self._debug_no_code_dumped = False
+        saw_messages = False
+        last_payload_snippet = ""
 
         while time.time() - start_time < timeout:
             try:
@@ -341,6 +348,11 @@ class CloudMailService(BaseEmailService):
                     continue
 
                 data = response.json()
+                if self._verbose_content_logging:
+                    try:
+                        last_payload_snippet = json.dumps(data, ensure_ascii=False)[:500]
+                    except Exception:
+                        last_payload_snippet = str(data)[:500]
                 messages = self._extract_messages(data)
                 if not messages:
                     if not getattr(self, "_debug_dumped", False):
@@ -358,24 +370,33 @@ class CloudMailService(BaseEmailService):
                     time.sleep(poll_interval)
                     continue
 
+                saw_messages = True
                 found_code = None
                 last_message_id = self._last_message_id_cache.get(email, "")
                 last_code = self._last_code_cache.get(email, "")
                 skew_seconds = int(self.config.get("otp_sent_time_skew_seconds") or 12)
                 skew_seconds = max(0, min(skew_seconds, 60))
                 cutoff_ts = (otp_sent_at - skew_seconds) if otp_sent_at else None
+                if cutoff_ts is not None and not time_filter_relaxed:
+                    # 在云端环境中，CloudMail 服务器时间与运行节点可能存在时钟偏差；
+                    # 若较长时间未命中验证码，则放宽时间窗，避免误判超时。
+                    relax_after = max(20.0, min(float(timeout) * 0.4, 45.0))
+                    if (time.time() - start_time) >= relax_after:
+                        time_filter_relaxed = True
+                        logger.warning("CloudMail 长时间未命中验证码，已放宽时间窗口过滤")
+
+                effective_cutoff_ts = None if time_filter_relaxed else cutoff_ts
                 candidates: List[Dict[str, Any]] = []
                 for message in messages:
                     if not isinstance(message, dict):
                         continue
                     msg_id = self._extract_message_id(message)
                     msg_time = self._extract_message_timestamp(message)
-                    if cutoff_ts is not None:
-                        if msg_time is None:
-                            # 在 OAuth 二次登录阶段必须严格按时间窗口取码，避免吞旧码
-                            continue
-                        if msg_time < cutoff_ts:
-                            continue
+                    if effective_cutoff_ts is not None and msg_time is not None and msg_time < effective_cutoff_ts:
+                        continue
+                    if effective_cutoff_ts is not None and msg_time is None and strict_time_filter:
+                        # 登录二次验证码阶段优先依赖排重策略，避免因缺失时间戳直接误判超时
+                        pass
 
                     content = self._extract_message_text(message)
                     code = self._extract_code_from_text(content, pattern)
@@ -434,7 +455,17 @@ class CloudMailService(BaseEmailService):
 
             time.sleep(poll_interval)
 
-        logger.warning(f"CloudMail 等待验证码超时: {email}")
+        if self._quiet_warnings:
+            logger.warning(f"CloudMail 等待验证码超时: {email}")
+        else:
+            logger.warning(
+                "CloudMail 等待验证码超时: %s (saw_messages=%s, excluded_count=%s, time_filter_relaxed=%s, payload=%s)",
+                email,
+                saw_messages,
+                len(excluded),
+                time_filter_relaxed,
+                (last_payload_snippet or "-"),
+            )
         return None
 
     def list_emails(self, **kwargs) -> List[Dict[str, Any]]:
