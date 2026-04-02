@@ -413,6 +413,7 @@ class RegistrationEngine:
         self.oauth_redirect_uri = settings.openai_redirect_uri
         self.oauth_issuer = settings.openai_auth_url.split('/oauth/')[0] if settings.openai_auth_url else "https://auth.openai.com"
         self._oauth_session_token = ""
+        self._oauth_flow_http_client: Optional[OpenAIHTTPClient] = None
 
         # 请求超时与重试
         try:
@@ -870,6 +871,22 @@ class RegistrationEngine:
             self._log(f"创建邮箱失败: {e}", "error")
             return False
 
+    def _check_ip_location(self) -> Tuple[bool, Optional[str]]:
+        """检查 IP 地理位置（对齐 any-auto-register 流程）。"""
+        client = None
+        try:
+            client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+            return client.check_ip_location()
+        except Exception as e:
+            self._log(f"检查 IP 地理位置失败: {e}", "error")
+            return False, None
+        finally:
+            try:
+                if client:
+                    client.close()
+            except Exception:
+                pass
+
     def wait_for_verification_email(self, timeout=120):
         self._log("等待验证码邮件...")
         email_id = self.email_info.get("service_id") if self.email_info else None
@@ -901,6 +918,317 @@ class RegistrationEngine:
         if code:
             self._used_verification_codes.add(str(code).strip())
         return code
+
+    def _build_oauth_manager(self) -> OAuthManager:
+        """创建 OAuth 管理器。"""
+        return OAuthManager(
+            client_id=self.oauth_client_id,
+            auth_url=f"{self.oauth_issuer}/oauth/authorize",
+            token_url=f"{self.oauth_issuer}/oauth/token",
+            redirect_uri=self.oauth_redirect_uri,
+            scope="openid email profile offline_access",
+            proxy_url=self.proxy_url,
+        )
+
+    def _reset_http_session(self) -> None:
+        """重置 HTTP 会话（用于重新登录阶段）。"""
+        try:
+            if self.session:
+                self.session.close()
+        except Exception:
+            pass
+        try:
+            if self._oauth_flow_http_client:
+                self._oauth_flow_http_client.close()
+        except Exception:
+            pass
+        self._oauth_flow_http_client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+        self.session = self._oauth_flow_http_client.session
+        self._otp_sent_at = None
+
+    def _prepare_oauth_authorize_flow(
+        self,
+        oauth_manager: OAuthManager,
+        label: str,
+    ) -> Tuple[Optional[OAuthStart], Optional[str], Optional[str]]:
+        """
+        初始化当前阶段 OAuth 授权流程。
+
+        Returns:
+            (oauth_start, did, sen_token)
+        """
+        self._log(f"{label}: 初始化会话...")
+        self._reset_http_session()
+
+        self._log(f"{label}: 初始化 OAuth 授权流程...")
+        self._log("开始 OAuth 授权流程...")
+        oauth_start = oauth_manager.start_oauth()
+        self._log(f"OAuth URL 已生成: {oauth_start.auth_url[:80]}...")
+
+        self._log(f"{label}: 获取 Device ID...")
+        did = self._oauth_get_device_id(self.session, oauth_start.auth_url)
+        if not did:
+            return None, None, None
+
+        self._log(f"{label}: 执行 Sentinel POW 验证...")
+        sen_token = None
+        try:
+            if self._oauth_flow_http_client:
+                sen_token = self._oauth_flow_http_client.check_sentinel(did)
+            else:
+                tmp_client = OpenAIHTTPClient(proxy_url=self.proxy_url)
+                sen_token = tmp_client.check_sentinel(did)
+                tmp_client.close()
+        except Exception as e:
+            self._log(f"Sentinel 检查异常: {e}", "warning")
+        if not sen_token:
+            self._log("Sentinel 检查失败: 未获取到 token", "warning")
+            return oauth_start, did, None
+
+        self._log("Sentinel token 获取成功")
+        self._log(f"{label}: Sentinel 验证通过")
+        return oauth_start, did, sen_token
+
+    def _register_password_simple(self) -> bool:
+        """提交注册密码（对齐 any-auto-register 最小请求头）。"""
+        try:
+            response = self.session.post(
+                OPENAI_API_ENDPOINTS["register"],
+                headers={
+                    "referer": f"{self.AUTH}/create-account/password",
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                },
+                data=json.dumps({"password": self.password, "username": self.email}),
+            )
+            self._log(f"提交密码状态: {response.status_code}")
+            if response.status_code != 200:
+                self._log(f"密码注册失败: {self._short_log_text(response.text, 260)}", "warning")
+            return response.status_code == 200
+        except Exception as e:
+            self._log(f"提交密码失败: {e}", "error")
+            return False
+
+    def _send_verification_code_simple(self) -> bool:
+        """发送验证码（对齐 any-auto-register 最小请求头）。"""
+        try:
+            self._otp_sent_at = time.time()
+            response = self.session.get(
+                OPENAI_API_ENDPOINTS["send_otp"],
+                headers={
+                    "referer": f"{self.AUTH}/create-account/password",
+                    "accept": "application/json",
+                },
+            )
+            self._log(f"验证码发送状态: {response.status_code}")
+            return response.status_code == 200
+        except Exception as e:
+            self._log(f"发送验证码失败: {e}", "error")
+            return False
+
+    def _validate_verification_code_simple(self, code: str) -> bool:
+        """校验验证码（对齐 any-auto-register 最小请求头）。"""
+        try:
+            response = self.session.post(
+                OPENAI_API_ENDPOINTS["validate_otp"],
+                headers={
+                    "referer": f"{self.AUTH}/email-verification",
+                    "accept": "application/json",
+                    "content-type": "application/json",
+                },
+                data=json.dumps({"code": code}),
+            )
+            self._log(f"验证码校验状态: {response.status_code}")
+            return response.status_code == 200
+        except Exception as e:
+            self._log(f"验证验证码失败: {e}", "error")
+            return False
+
+    def _complete_oauth_token_exchange(
+        self,
+        oauth_manager: OAuthManager,
+        oauth_start: OAuthStart,
+        result: RegistrationResult,
+    ) -> Tuple[bool, str]:
+        """完成登录后验证码、workspace、callback、token 兑换。"""
+        self._log("等待登录验证码...")
+        code = self.wait_for_verification_email(timeout=120)
+        if not code:
+            return False, "获取登录验证码失败"
+        self._log(f"成功获取验证码: {code}")
+
+        self._log("校验登录验证码...")
+        if not self._oauth_validate_verification_code(self.session, code):
+            return False, "登录验证码校验失败"
+
+        auth_code = self._oauth_exchange_auth_code(self.session, oauth_start)
+        if not auth_code:
+            return False, "未能从 Workspace/重定向链提取 code"
+
+        callback_url = f"{oauth_start.redirect_uri}?code={auth_code}&state={oauth_start.state}"
+        self._log("处理 OAuth 回调并获取 Token...")
+        token_info = self._oauth_handle_callback(oauth_manager, oauth_start, callback_url)
+        if not token_info:
+            return False, "处理 OAuth 回调失败"
+
+        result.account_id = token_info.get("account_id", "") or result.account_id
+        result.access_token = token_info.get("access_token", "")
+        result.refresh_token = token_info.get("refresh_token", "")
+        result.id_token = token_info.get("id_token", "")
+        result.session_token = self.session.cookies.get("__Secure-next-auth.session-token") or ""
+        self._oauth_session_token = result.session_token or ""
+        return True, ""
+
+    def _run_full_oauth_registration(self) -> RegistrationResult:
+        """按 any-auto-register 逻辑执行全程 HTTP OAuth 注册。"""
+        result = RegistrationResult(success=False, logs=self.logs)
+        self._used_verification_codes.clear()
+        self._otp_sent_at = None
+
+        try:
+            self._log("=" * 60)
+            self._log("注册流程启动")
+            self._log("=" * 60)
+
+            self._log("1. 检查 IP 地理位置...")
+            ip_ok, location = self._check_ip_location()
+            if not ip_ok:
+                result.error_message = f"IP 地理位置不支持: {location}"
+                self._log(f"IP 检查失败: {location}", "error")
+                return result
+            self._log(f"IP 位置: {location}")
+
+            self._log("2. 创建邮箱...")
+            if not self._create_email():
+                result.error_message = "创建邮箱失败"
+                return result
+            result.email = self.email or ""
+            self.password = self._generate_password()
+            result.password = self.password
+            self._log(f"成功创建邮箱: {self.email}")
+
+            oauth_manager = self._build_oauth_manager()
+            oauth_start, did, sen_token = self._prepare_oauth_authorize_flow(oauth_manager, "首次授权")
+            if not oauth_start or not did:
+                result.error_message = "获取 Device ID 失败"
+                return result
+            if not sen_token:
+                result.error_message = "Sentinel POW 验证失败"
+                return result
+
+            self._log("4. 提交注册邮箱...")
+            signup_result = self._oauth_submit_auth_start(
+                self.session,
+                did,
+                sen_token,
+                screen_hint="signup",
+                referer=f"{self.AUTH}/create-account",
+                log_label="提交注册表单",
+                record_existing_account=True,
+            )
+            if not signup_result.success:
+                result.error_message = f"提交注册表单失败: {signup_result.error_message}"
+                return result
+
+            if not signup_result.is_existing_account:
+                self._log("5. 设置密码...")
+                self._log(f"生成密码: {self.password}")
+                if not self._register_password_simple():
+                    result.error_message = "注册密码失败"
+                    return result
+
+                self._log("6. 发送注册验证码...")
+                if not self._send_verification_code_simple():
+                    result.error_message = "发送验证码失败"
+                    return result
+
+                self._log("7. 等待注册验证码...")
+                first_code = self.wait_for_verification_email(timeout=120)
+                if not first_code:
+                    result.error_message = "获取注册验证码失败"
+                    return result
+                self._log(f"成功获取验证码: {first_code}")
+
+                self._log("8. 校验注册验证码...")
+                if not self._validate_verification_code_simple(first_code):
+                    result.error_message = "注册验证码校验失败"
+                    return result
+
+                self._log("9. 创建用户账户...")
+                user_info = generate_random_user_info()
+                self._log(f"生成用户信息: {user_info['name']}, 生日: {user_info['birthdate']}")
+                status, data = self.create_account(
+                    user_info["name"],
+                    user_info["birthdate"],
+                    retries=2,
+                )
+                if status != 200:
+                    result.error_message = (
+                        f"Create Account 失败 ({status}): {self._short_log_text(data, 220)}"
+                    )
+                    return result
+
+                self._log("注册完成，开始重新登录以获取 Token...")
+                oauth_manager = self._build_oauth_manager()
+                oauth_start, did, sen_token = self._prepare_oauth_authorize_flow(oauth_manager, "重新登录")
+                if not oauth_start or not did:
+                    result.error_message = "重新登录时获取 Device ID 失败"
+                    return result
+                if not sen_token:
+                    result.error_message = "重新登录时 Sentinel POW 验证失败"
+                    return result
+
+                login_start = self._oauth_submit_login_start(self.session, did, sen_token)
+                if not login_start.success:
+                    result.error_message = f"重新登录提交邮箱失败: {login_start.error_message}"
+                    return result
+                if login_start.page_type != OPENAI_PAGE_TYPES["LOGIN_PASSWORD"]:
+                    result.error_message = f"重新登录未进入密码页面: {login_start.page_type or 'unknown'}"
+                    return result
+
+                password_result = self._oauth_submit_login_password(self.session)
+                if not password_result.success:
+                    result.error_message = f"重新登录提交密码失败: {password_result.error_message}"
+                    return result
+                if not password_result.is_existing_account:
+                    result.error_message = f"重新登录未进入验证码页面: {password_result.page_type or 'unknown'}"
+                    return result
+            else:
+                self._log("检测到该邮箱已注册，直接进入登录验证码流程")
+
+            ok, token_error = self._complete_oauth_token_exchange(
+                oauth_manager,
+                oauth_start,
+                result,
+            )
+            if not ok:
+                result.error_message = token_error
+                return result
+
+            result.success = True
+            result.source = "register"
+            result.metadata = {
+                "email_service": self.email_service.service_type.value,
+                "email_service_id": self.email_info.get("service_id") if self.email_info else None,
+                "proxy_used": self.proxy_url,
+                "token_mode": self.token_mode,
+                "token_source": "oauth",
+                "auth_profile": "codex_oauth",
+                "registration_completed": True,
+                "registered_at": datetime.now().isoformat(),
+                "user_agent": self.ua,
+            }
+
+            self._log("=" * 60)
+            self._log("注册成功")
+            self._log(f"邮箱: {result.email}")
+            self._log(f"Account ID: {result.account_id}")
+            self._log("=" * 60)
+            return result
+        except Exception as e:
+            self._log(f"注册过程中发生未预期错误: {e}", "error")
+            result.error_message = str(e)
+            return result
 
     # ======== HTTP Flows ========
 
@@ -2546,7 +2874,7 @@ class RegistrationEngine:
                 response = session.get(auth_url, timeout=20)
                 did = session.cookies.get("oai-did")
                 if did:
-                    self._log(f"OAuth Device ID: {did}")
+                    self._log(f"Device ID: {did}")
                     return did
                 self._log(
                     f"获取 Device ID 失败: 未返回 oai-did Cookie (HTTP {response.status_code}, 第 {attempt}/{max_attempts} 次)",
@@ -4155,6 +4483,9 @@ class RegistrationEngine:
     # ====== Main Run ======
 
     def run(self) -> RegistrationResult:
+        if self.token_mode == "oauth":
+            return self._run_full_oauth_registration()
+
         result = RegistrationResult(success=False, logs=self.logs)
         token_source = "unknown"
         issued_client_id = ""
