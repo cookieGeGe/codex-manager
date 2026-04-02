@@ -493,6 +493,9 @@ class RegistrationEngine:
         self.http_oauth_quiet = _env_bool("HTTP_OAUTH_QUIET", True)
         self.http_oauth_verbose_trace = _env_bool("HTTP_OAUTH_VERBOSE_TRACE", False)
         self.http_request_retry_verbose = _env_bool("HTTP_REQUEST_RETRY_VERBOSE", False)
+        # 任务日志写库开关与退避，避免连接池压力导致整站请求阻塞
+        self.task_log_db_enabled = _env_bool("TASK_LOG_DB_ENABLED", True)
+        self._task_log_db_suspended_until = 0.0
 
     def _oauth_trace_enabled(self) -> bool:
         return bool(getattr(self, "http_oauth_verbose_trace", False))
@@ -533,12 +536,26 @@ class RegistrationEngine:
         self.logs.append(log_message)
         if self.callback_logger:
             self.callback_logger(log_message)
-        if self.task_uuid:
+        now_ts = time.time()
+        if (
+            self.task_uuid
+            and self.task_log_db_enabled
+            and now_ts >= float(getattr(self, "_task_log_db_suspended_until", 0.0) or 0.0)
+        ):
             try:
                 with get_db() as db:
                     crud.append_task_log(db, self.task_uuid, log_message)
             except Exception as e:
-                logger.warning(f"记录任务日志失败: {e}")
+                err_text = str(e or "")
+                if "QueuePool limit" in err_text or "connection timed out" in err_text:
+                    # 写库日志在连接池拥堵时退避，避免每条日志都继续占用数据库连接
+                    self._task_log_db_suspended_until = time.time() + 60
+                    logger.warning(
+                        "记录任务日志失败（连接池拥堵，已暂停写库日志 60s）: %s",
+                        e,
+                    )
+                else:
+                    logger.warning(f"记录任务日志失败: {e}")
         if level == "error":
             logger.error(log_message)
         elif level == "warning":

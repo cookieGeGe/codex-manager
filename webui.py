@@ -38,6 +38,14 @@ def _force_beijing_timezone():
         logging.getLogger(__name__).warning(f"设置时区失败: {exc}")
 
 
+def _is_truthy(value: str, default: bool = False) -> bool:
+    """解析环境变量布尔值。"""
+    raw = (value or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 def _load_dotenv():
     """加载 .env 文件（可执行文件同目录或项目根目录）"""
     env_path = project_root / ".env"
@@ -87,9 +95,12 @@ def setup_application():
 
     # 配置日志（日志文件写到实际 logs 目录）
     log_file = str(logs_dir / Path(settings.log_file).name)
+    # 默认关闭 stdout 日志，避免 Docker 日志被刷爆；显式设置 APP_LOG_TO_STDOUT=1 可开启
+    log_to_stdout = _is_truthy(os.environ.get("APP_LOG_TO_STDOUT"), default=False)
     setup_logging(
         log_level=settings.log_level,
-        log_file=log_file
+        log_file=log_file,
+        enable_console=log_to_stdout,
     )
 
     logger = logging.getLogger(__name__)
@@ -159,6 +170,11 @@ def start_webui():
         "access_log": settings.debug,
         "ws": "websockets",
     }
+
+    # 允许在 Docker 中关闭 stdout 日志，避免刷满容器日志
+    if not _is_truthy(os.environ.get("APP_LOG_TO_STDOUT"), default=False):
+        uvicorn_config["access_log"] = False
+        uvicorn_config["log_config"] = None
 
     logger = logging.getLogger(__name__)
     logger.info(f"启动 Web UI 在 http://{settings.webui_host}:{settings.webui_port}")
