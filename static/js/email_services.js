@@ -253,11 +253,6 @@ function renderDuckReceiverServiceOptions() {
         const currentValue = String(selectEl.value || '').trim();
         selectEl.innerHTML = '';
 
-        const emptyOption = document.createElement('option');
-        emptyOption.value = '';
-        emptyOption.textContent = '不指定（使用 Duck 别名自身收件）';
-        selectEl.appendChild(emptyOption);
-
         options.forEach((service) => {
             const option = document.createElement('option');
             option.value = String(service.id);
@@ -274,6 +269,9 @@ function renderDuckReceiverServiceOptions() {
                 selectEl.appendChild(currentOption);
             }
             selectEl.value = currentValue;
+        } else if (options.length > 0) {
+            // 保持“可选”语义：未配置时不自动选择第一项，避免误提交 receiver_service_id
+            selectEl.selectedIndex = -1;
         }
     });
 }
