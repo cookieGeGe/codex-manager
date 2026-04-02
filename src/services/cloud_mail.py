@@ -39,7 +39,7 @@ class CloudMailService(BaseEmailService):
             "otp_sent_time_skew_seconds": 12,
             "prefix": "oc",
             "token_bytes": 3,
-            "page_size": 5,
+            "page_size": 20,
             "auth_header": "Authorization",
             "auth_prefix": "",
             "proxy_url": None,
@@ -215,24 +215,27 @@ class CloudMailService(BaseEmailService):
                 if text:
                     parts.append(_strip_html(text) if ("<" in text and ">" in text) else text)
 
-        for key in (
-            "subject", "title", "text", "content", "html", "body",
+        direct_text_keys = (
+            "subject", "title", "mailSubject", "mailTitle",
+            "text", "content", "html", "body",
             "textContent", "contentText", "mailText", "mailContent",
-            "bodyText", "text_body", "mail_body",
-            "source", "raw"
-        ):
+            "bodyText", "text_body", "mail_body", "mailBody",
+            "preview", "snippet", "summary", "intro", "mailPreview",
+            "contentHtml", "htmlContent", "source", "raw",
+        )
+        for key in direct_text_keys:
             value = message.get(key)
             if isinstance(value, dict):
-                for nested_key in ("subject", "title", "text", "content", "html", "body", "mailText"):
+                for nested_key in direct_text_keys:
                     _append(value.get(nested_key))
             else:
                 _append(value)
 
         # 兼容嵌套结构
-        for nested_key in ("data", "mail", "email", "detail", "message"):
+        for nested_key in ("data", "mail", "email", "detail", "message", "payload", "item", "record"):
             nested = message.get(nested_key)
             if isinstance(nested, dict):
-                for key in ("subject", "title", "text", "content", "html", "body", "mailText"):
+                for key in direct_text_keys:
                     _append(nested.get(key))
 
         return " ".join(parts).strip()
@@ -257,14 +260,31 @@ class CloudMailService(BaseEmailService):
         if not text:
             return None
         lowered = text.lower()
-        semantic_pattern = r"(?:code\\s+is|verification code|temporary verification code|one-time code|验证码)\\s*[:：]?\\s*(\\d{6})"
-        if "openai" in lowered or "chatgpt" in lowered or "verification code" in lowered or "验证码" in text:
-            match = re.search(semantic_pattern, text, re.I)
+        semantic_patterns = (
+            r"(?is)(?:verification\s+code|temporary verification code|one[-\s]*time\s+(?:password|code)|security\s+code|login\s+code|验证码|校验码|动态码|認證碼|驗證碼|代码|code)[^0-9]{0,30}(\d{6})",
+            r"(?is)\bcode\b[^0-9]{0,12}(\d{6})",
+        )
+        for regex in semantic_patterns:
+            match = re.search(regex, text, re.I)
             if match:
-                return match.group(1)
+                return match.group(1) if match.groups() else match.group(0)
 
+        # 对大段 JSON 文本做兜底时，避免误命中随机 6 位数字
+        context_hint = (
+            "openai" in lowered
+            or "chatgpt" in lowered
+            or "verification" in lowered
+            or "验证码" in text
+            or "校验码" in text
+            or "代码" in text
+        )
         match = re.search(pattern, text)
-        return match.group(1) if match else None
+        if not match:
+            return None
+        code = match.group(1) if match.groups() else match.group(0)
+        if len(text) <= 1200 or context_hint:
+            return code
+        return None
 
     def create_email(self, config: Dict[str, Any] = None) -> Dict[str, Any]:
         """生成 CloudMail 邮箱地址（无需远端创建）。"""
@@ -400,8 +420,8 @@ class CloudMailService(BaseEmailService):
 
                     content = self._extract_message_text(message)
                     code = self._extract_code_from_text(content, pattern)
-                    if not code and not content:
-                        # 兜底：在原始消息 JSON 中尝试语义提取
+                    if not code:
+                        # 兜底：无论正文是否为空，都在原始消息 JSON 中做一次提码，兼容异构字段名
                         raw_blob = json.dumps(message, ensure_ascii=False)
                         code = self._extract_code_from_text(raw_blob, pattern)
 
@@ -422,7 +442,9 @@ class CloudMailService(BaseEmailService):
                         code = str(candidate.get("code") or "")
                         msg_id = str(candidate.get("msg_id") or "")
                         if msg_id and last_message_id and msg_id == last_message_id:
-                            continue
+                            # 兼容部分平台复用同一个 message_id 但更新验证码内容
+                            if last_code and code == last_code:
+                                continue
                         if not msg_id and last_code and code == last_code:
                             continue
                         self._last_code_cache[email] = code
@@ -445,7 +467,10 @@ class CloudMailService(BaseEmailService):
                             snippet = json.dumps(sample, ensure_ascii=False)[:400]
                         except Exception:
                             snippet = str(sample)[:400]
-                        logger.warning(f"CloudMail 已获取邮件但未匹配验证码，示例片段: {snippet}")
+                        key_hint = ", ".join(sorted(sample.keys())[:20]) if isinstance(sample, dict) else "-"
+                        logger.warning(
+                            f"CloudMail 已获取邮件但未匹配验证码，示例字段: {key_hint}，示例片段: {snippet}"
+                        )
                     else:
                         logger.warning("CloudMail 已获取邮件但未匹配验证码（已隐藏示例片段）")
                     self._debug_no_code_dumped = True
