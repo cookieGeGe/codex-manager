@@ -102,11 +102,10 @@ const elements = {
     tmServiceSelect: document.getElementById('tm-service-select'),
     // 定时 CPA
     cpaAutoCheckEnabled: document.getElementById('cpa-auto-check-enabled'),
+    cpaMasterToggleWrap: document.getElementById('cpa-master-toggle-wrap'),
+    cpaCheckMasterStatus: document.getElementById('cpa-check-master-status'),
     cpaCheckMode: document.getElementById('cpa-check-mode'),
-    cpaTestUrl: document.getElementById('cpa-test-url'),
-    cpaTestModel: document.getElementById('cpa-test-model'),
     cpaCheckInterval: document.getElementById('cpa-check-interval'),
-    cpaCheckSleep: document.getElementById('cpa-check-sleep'),
     cpaCheckMinRemainingWeeklyPercent: document.getElementById('cpa-check-min-remaining-weekly-percent'),
     cpaPolicyRulesContainer: document.getElementById('cpa-policy-rules-container'),
     cpaAddPolicyRuleBtn: document.getElementById('cpa-add-policy-rule-btn'),
@@ -152,6 +151,9 @@ const CPA_RULE_TARGET_STATUS_OPTIONS = [
     { value: 'enabled', label: '仅启用状态' },
     { value: 'disabled', label: '仅关闭状态' },
 ];
+const CPA_CHECK_FIXED_SLEEP_SECONDS = 0;
+const CPA_CHECK_FIXED_TEST_URL = '';
+const CPA_CHECK_FIXED_TEST_MODEL = '';
 
 function loadRegistrationFormState() {
     try {
@@ -361,11 +363,9 @@ async function loadSchedulerConfig() {
     try {
         const config = await api.get('/scheduler/config');
         if (elements.cpaAutoCheckEnabled) elements.cpaAutoCheckEnabled.checked = config.check_enabled;
+        updateCpaCheckMasterToggleUI();
         if (elements.cpaCheckMode) elements.cpaCheckMode.value = config.check_mode || 'panel';
-        if (elements.cpaTestUrl) elements.cpaTestUrl.value = config.test_url || '';
-        if (elements.cpaTestModel) elements.cpaTestModel.value = config.test_model || '';
         if (elements.cpaCheckInterval) elements.cpaCheckInterval.value = config.check_interval;
-        if (elements.cpaCheckSleep) elements.cpaCheckSleep.value = config.check_sleep;
         if (elements.cpaCheckMinRemainingWeeklyPercent) {
             elements.cpaCheckMinRemainingWeeklyPercent.value =
                 config.check_min_remaining_weekly_percent ?? 20;
@@ -788,6 +788,10 @@ function initEventListeners() {
     if (elements.cpaAddPolicyRuleBtn) {
         elements.cpaAddPolicyRuleBtn.addEventListener('click', handleAddCpaPolicyRule);
     }
+    if (elements.cpaAutoCheckEnabled) {
+        elements.cpaAutoCheckEnabled.addEventListener('change', updateCpaCheckMasterToggleUI);
+        updateCpaCheckMasterToggleUI();
+    }
     if (elements.cpaPolicyRulesContainer) {
         elements.cpaPolicyRulesContainer.addEventListener('click', handleCpaPolicyRuleContainerClick);
         elements.cpaPolicyRulesContainer.addEventListener('change', handleCpaPolicyRuleContainerChange);
@@ -881,10 +885,10 @@ async function handleSaveSchedulerConfig() {
             check_remove_401: false,
             check_remove_401_interval: 3,
             check_interval: parseInt(elements.cpaCheckInterval.value) || 60,
-            check_sleep: parseInt(elements.cpaCheckSleep.value) || 0,
+            check_sleep: CPA_CHECK_FIXED_SLEEP_SECONDS,
             check_min_remaining_weekly_percent: parseInt(elements.cpaCheckMinRemainingWeeklyPercent.value) || 0,
-            test_url: elements.cpaTestUrl.value,
-            test_model: elements.cpaTestModel ? elements.cpaTestModel.value : "",
+            test_url: CPA_CHECK_FIXED_TEST_URL,
+            test_model: CPA_CHECK_FIXED_TEST_MODEL,
             register_enabled: elements.cpaAutoRegisterEnabled.checked,
             register_threshold: parseInt(elements.cpaRegisterThreshold.value) || 10,
             register_batch_count: parseInt(elements.cpaRegisterBatchCount.value) || 5,
@@ -897,6 +901,7 @@ async function handleSaveSchedulerConfig() {
         updateCpaSchedulerBadge(
             !!(elements.cpaAutoCheckEnabled.checked || elements.cpaAutoRegisterEnabled.checked)
         );
+        updateCpaCheckMasterToggleUI();
     } catch (e) {
         toast.error("保存失败: " + e.message);
     } finally {
@@ -909,6 +914,7 @@ async function handleStopSchedulerTask() {
     elements.cpaStopTaskBtn.disabled = true;
     elements.cpaAutoCheckEnabled.checked = false;
     elements.cpaAutoRegisterEnabled.checked = false;
+    updateCpaCheckMasterToggleUI();
     try {
         const emailServicePool = getSelectedEmailServiceValues().filter(v => v !== 'outlook_batch:all');
         const policyRules = collectCpaPolicyRulesFromUi();
@@ -919,10 +925,10 @@ async function handleStopSchedulerTask() {
             check_remove_401: false,
             check_remove_401_interval: 3,
             check_interval: parseInt(elements.cpaCheckInterval.value) || 60,
-            check_sleep: parseInt(elements.cpaCheckSleep.value) || 0,
+            check_sleep: CPA_CHECK_FIXED_SLEEP_SECONDS,
             check_min_remaining_weekly_percent: parseInt(elements.cpaCheckMinRemainingWeeklyPercent.value) || 0,
-            test_url: elements.cpaTestUrl.value,
-            test_model: elements.cpaTestModel ? elements.cpaTestModel.value : "",
+            test_url: CPA_CHECK_FIXED_TEST_URL,
+            test_model: CPA_CHECK_FIXED_TEST_MODEL,
             register_enabled: false,
             register_threshold: parseInt(elements.cpaRegisterThreshold.value) || 10,
             register_batch_count: parseInt(elements.cpaRegisterBatchCount.value) || 5,
@@ -978,7 +984,19 @@ function updateCpaSchedulerBadge(isEnabled) {
     } else {
         badge.textContent = '🔴 未开启';
         badge.style.backgroundColor = 'rgba(244, 67, 54, 0.1)';
-        badge.style.color = 'var(--error-color)';
+        badge.style.color = 'var(--danger-color)';
+    }
+}
+
+function updateCpaCheckMasterToggleUI() {
+    const enabled = !!(elements.cpaAutoCheckEnabled && elements.cpaAutoCheckEnabled.checked);
+    if (elements.cpaMasterToggleWrap) {
+        elements.cpaMasterToggleWrap.classList.toggle('enabled', enabled);
+    }
+    if (elements.cpaCheckMasterStatus) {
+        elements.cpaCheckMasterStatus.textContent = enabled ? '已启用' : '已关闭';
+        elements.cpaCheckMasterStatus.classList.toggle('on', enabled);
+        elements.cpaCheckMasterStatus.classList.toggle('off', !enabled);
     }
 }
 
