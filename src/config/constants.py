@@ -46,7 +46,7 @@ class EmailServiceType(str, Enum):
 # ============================================================================
 
 APP_NAME = "OpenAI/Codex CLI 自动注册系统"
-APP_VERSION = "2.0.23"
+APP_VERSION = "2.0.24"
 APP_DESCRIPTION = "自动注册 OpenAI/Codex CLI 账号的系统"
 
 # ============================================================================
@@ -408,3 +408,4 @@ MICROSOFT_SCOPES = {
 
 # Outlook 提供者默认优先级
 OUTLOOK_PROVIDER_PRIORITY = ["imap_new", "imap_old", "graph_api"]
+

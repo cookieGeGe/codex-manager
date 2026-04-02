@@ -69,6 +69,10 @@ const elements = {
     // 已注册账号
     recentAccountsTable: document.getElementById('recent-accounts-table'),
     refreshAccountsBtn: document.getElementById('refresh-accounts-btn'),
+    unauthorizedAccountsTable: document.getElementById('unauthorized-accounts-table'),
+    unauthorizedCount: document.getElementById('unauthorized-count'),
+    refreshUnauthorizedBtn: document.getElementById('refresh-unauthorized-btn'),
+    clearUnauthorizedBtn: document.getElementById('clear-unauthorized-btn'),
     // Outlook 批量注册
     outlookBatchSection: document.getElementById('outlook-batch-section'),
     outlookAccountsContainer: document.getElementById('outlook-accounts-container'),
@@ -759,6 +763,15 @@ function initEventListeners() {
         loadRecentAccounts();
         toast.info('已刷新');
     });
+    if (elements.refreshUnauthorizedBtn) {
+        elements.refreshUnauthorizedBtn.addEventListener('click', () => {
+            loadUnauthorizedAccounts();
+            toast.info('未授权账号已刷新');
+        });
+    }
+    if (elements.clearUnauthorizedBtn) {
+        elements.clearUnauthorizedBtn.addEventListener('click', handleClearUnauthorizedAccounts);
+    }
 
     // 并发模式切换
     elements.concurrencyMode.addEventListener('change', () => {
@@ -1736,7 +1749,7 @@ async function loadRecentAccounts() {
         if (data.accounts.length === 0) {
             elements.recentAccountsTable.innerHTML = `
                 <tr>
-                    <td colspan="5">
+                    <td colspan="4">
                         <div class="empty-state" style="padding: var(--spacing-md);">
                             <div class="empty-state-icon">📭</div>
                             <div class="empty-state-title">暂无已注册账号</div>
@@ -1744,6 +1757,7 @@ async function loadRecentAccounts() {
                     </td>
                 </tr>
             `;
+            await loadUnauthorizedAccounts();
             return;
         }
 
@@ -1777,9 +1791,82 @@ async function loadRecentAccounts() {
         elements.recentAccountsTable.querySelectorAll('.copy-pwd-btn').forEach(btn => {
             btn.addEventListener('click', (e) => { e.stopPropagation(); copyToClipboard(btn.dataset.pwd); });
         });
+        await loadUnauthorizedAccounts();
 
     } catch (error) {
         console.error('加载账号列表失败:', error);
+        await loadUnauthorizedAccounts();
+    }
+}
+
+// 加载未授权账号（待授权）
+async function loadUnauthorizedAccounts() {
+    if (!elements.unauthorizedAccountsTable || !elements.unauthorizedCount) return;
+    try {
+        const data = await api.get('/accounts?page=1&page_size=20&status=pending_oauth');
+        const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+        const total = Number.isFinite(data.total) ? data.total : accounts.length;
+        elements.unauthorizedCount.textContent = String(total);
+
+        if (accounts.length === 0) {
+            elements.unauthorizedAccountsTable.innerHTML = `
+                <tr>
+                    <td colspan="3">
+                        <div class="empty-state" style="padding: var(--spacing-md);">
+                            <div class="empty-state-icon">✅</div>
+                            <div class="empty-state-title">暂无未授权账号</div>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        elements.unauthorizedAccountsTable.innerHTML = accounts.map(account => `
+            <tr data-id="${account.id}">
+                <td>${account.id}</td>
+                <td title="${escapeHtml(account.email)}">${escapeHtml(account.email)}</td>
+                <td>${getStatusIcon(account.status)}</td>
+            </tr>
+        `).join('');
+    } catch (error) {
+        console.error('加载未授权账号失败:', error);
+    }
+}
+
+// 一键清理未授权账号（pending_oauth）
+async function handleClearUnauthorizedAccounts() {
+    try {
+        const data = await api.get('/accounts?page=1&page_size=1&status=pending_oauth');
+        const total = Number.isFinite(data.total) ? data.total : 0;
+        if (total <= 0) {
+            toast.info('当前没有未授权账号');
+            return;
+        }
+
+        const ok = await confirm(`确认清理 ${total} 个未授权账号吗？`, '清理未授权账号');
+        if (!ok) return;
+
+        if (elements.clearUnauthorizedBtn) {
+            elements.clearUnauthorizedBtn.disabled = true;
+            elements.clearUnauthorizedBtn.textContent = '清理中...';
+        }
+
+        const result = await api.post('/accounts/batch-delete', {
+            ids: [],
+            select_all: true,
+            status_filter: 'pending_oauth'
+        });
+        const deleted = Number(result.deleted_count || 0);
+        toast.success(`已清理 ${deleted} 个未授权账号`);
+        await loadRecentAccounts();
+    } catch (error) {
+        toast.error(`清理失败: ${error.message}`);
+    } finally {
+        if (elements.clearUnauthorizedBtn) {
+            elements.clearUnauthorizedBtn.disabled = false;
+            elements.clearUnauthorizedBtn.textContent = '🧹 一键清理';
+        }
     }
 }
 

@@ -7,10 +7,16 @@
     <link rel="stylesheet" href="/static/css/style.css?v={{ static_version }}">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
     <style>
+        /* 注册页容器放宽，减少两侧留白 */
+        .container {
+            max-width: min(1720px, 97vw);
+            padding: 0 var(--spacing-md);
+        }
+
         /* 两栏布局 */
         .two-column-layout {
             display: grid;
-            grid-template-columns: minmax(620px, 1.85fr) minmax(300px, 1fr);
+            grid-template-columns: minmax(760px, 1.6fr) minmax(460px, 1.15fr);
             gap: var(--spacing-lg);
             align-items: start;
         }
@@ -524,10 +530,45 @@
                                     </thead>
                                     <tbody id="recent-accounts-table">
                                         <tr>
-                                            <td colspan="5">
+                                            <td colspan="4">
                                                 <div class="empty-state" style="padding: var(--spacing-md);">
                                                     <div class="empty-state-icon">📭</div>
                                                     <div class="empty-state-title">暂无已注册账号</div>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 未授权账号列表 -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>🔒 未授权账号</h3>
+                            <div style="display: flex; gap: var(--spacing-sm); align-items: center;">
+                                <span id="unauthorized-count" class="status-badge pending">0</span>
+                                <button class="btn btn-ghost btn-sm" id="refresh-unauthorized-btn">🔄 刷新</button>
+                                <button class="btn btn-danger btn-sm" id="clear-unauthorized-btn">🧹 一键清理</button>
+                            </div>
+                        </div>
+                        <div class="card-body" style="padding: 0;">
+                            <div class="recent-accounts-table">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 60px;">ID</th>
+                                            <th>邮箱</th>
+                                            <th style="width: 140px;">状态</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="unauthorized-accounts-table">
+                                        <tr>
+                                            <td colspan="3">
+                                                <div class="empty-state" style="padding: var(--spacing-md);">
+                                                    <div class="empty-state-icon">✅</div>
+                                                    <div class="empty-state-title">暂无未授权账号</div>
                                                 </div>
                                             </td>
                                         </tr>
