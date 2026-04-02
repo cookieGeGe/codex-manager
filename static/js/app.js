@@ -1450,7 +1450,9 @@ function addLog(type, message) {
     const timestamp = new Date().toLocaleTimeString('zh-CN', {
         hour: '2-digit',
         minute: '2-digit',
-        second: '2-digit'
+        second: '2-digit',
+        hour12: false,
+        timeZone: 'Asia/Shanghai'
     });
 
     line.innerHTML = `<span class="timestamp">[${timestamp}]</span>${escapeHtml(message)}`;

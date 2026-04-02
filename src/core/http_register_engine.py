@@ -25,6 +25,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urljoin, unquote
 
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.models import Response
+from zoneinfo import ZoneInfo
 
 from .openai.oauth import OAuthManager, OAuthStart
 from .http_client import OpenAIHTTPClient, HTTPClientError
@@ -44,6 +45,7 @@ from ..config.constants import (
 from ..config.settings import get_settings
 
 logger = logging.getLogger(__name__)
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 _OAUTH_RATE_LIMIT_UNTIL_TS: float = 0.0
 _OAUTH_RATE_LIMIT_LOCK = threading.Lock()
@@ -523,7 +525,7 @@ class RegistrationEngine:
         if self._oauth_quiet_enabled() and self._is_http_oauth_noise_message(message):
             logger.debug(f"[HTTP_OAUTH_QUIET] {message}")
             return
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.now(_SHANGHAI_TZ).strftime("%H:%M:%S")
         log_message = f"[{timestamp}] {message}"
         if level == "debug" and not self._oauth_trace_enabled():
             logger.debug(log_message)

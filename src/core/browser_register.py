@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 from curl_cffi import requests as cffi_requests
 
@@ -26,6 +27,7 @@ from .register import RegistrationResult
 from .utils import get_logs_dir
 
 logger = logging.getLogger(__name__)
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 class BrowserRegistrationEngine:
     def __init__(
@@ -1241,7 +1243,7 @@ class BrowserRegistrationEngine:
         return ""
 
     def _log(self, message: str, level: str = "info"):
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.now(_SHANGHAI_TZ).strftime("%H:%M:%S")
         log_message = f"[{timestamp}] [Browser] {message}"
         self.logs.append(log_message)
         if self.callback_logger:
